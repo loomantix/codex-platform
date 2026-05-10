@@ -1,0 +1,129 @@
+# Canonical sync manifest for codex-platform.
+#
+# `sync-engine.py` reads this file from the upstream checkout (this repo, or
+# a fork of it) to learn which files to copy into a consumer repo, and which
+# `<<KEY>>` placeholders to substitute from the consumer's
+# `.platform-config.yml`.
+#
+# `substitutions: []` means verbatim copy. `delete: true` causes the engine
+# to remove the destination from the consumer (and prune empty parent
+# directories) — use this to retire a previously-synced file across all
+# consumers. `mode` (e.g. `"0755"`) sets the destination permissions.
+#
+# Adding a new file to the sync surface = add an entry here. Consumers that
+# don't want a particular file can opt out via `skip_targets` in their own
+# `.platform-config.yml`; forks that want to drop or add files entirely can
+# edit this manifest in the fork.
+
+targets:
+  # Codex skills — checked into consumer repo so teammates without the
+  # global install can still invoke them. Devs who installed via
+  # `scripts/install-skills.sh` will resolve from `~/.codex/skills/` first;
+  # the in-repo copy is the fallback for everyone else and for CI contexts.
+  - source: .codex/skills/issues/SKILL.md
+    destination: .codex/skills/issues/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/issues/scripts/ready.py
+    destination: .codex/skills/issues/scripts/ready.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/issues/scripts/link.py
+    destination: .codex/skills/issues/scripts/link.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/refactorpass/SKILL.md
+    destination: .codex/skills/refactorpass/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/grill/SKILL.md
+    destination: .codex/skills/grill/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/deepgrill/SKILL.md
+    destination: .codex/skills/deepgrill/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/reviewit/SKILL.md
+    destination: .codex/skills/reviewit/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/copilot-review/SKILL.md
+    destination: .codex/skills/copilot-review/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/feature-dev/SKILL.md
+    destination: .codex/skills/feature-dev/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/agent-loop/SKILL.md
+    destination: .codex/skills/agent-loop/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/agent-loop/scripts/agent-loop.sh
+    destination: .codex/skills/agent-loop/scripts/agent-loop.sh
+    substitutions: []
+    mode: '0755'
+
+  # /agent-loop expects `agent-loop-instructions.md` at the consumer's repo
+  # root. `create_if_missing: true` bootstraps the file from this template
+  # on first sync, then leaves it alone — consumer customizations made
+  # after the initial sync survive every subsequent run.
+  - source: .codex/skills/agent-loop/agent-loop-instructions.md.template
+    destination: agent-loop-instructions.md
+    substitutions: []
+    create_if_missing: true
+
+  # Long role prompts are references, not always-loaded agent definitions.
+  # Skills load them only when they need a specialized stance.
+  - source: .codex/references/roles/code-explorer.md
+    destination: .codex/references/roles/code-explorer.md
+    substitutions: []
+
+  - source: .codex/references/roles/code-architect.md
+    destination: .codex/references/roles/code-architect.md
+    substitutions: []
+
+  - source: .codex/references/roles/code-reviewer.md
+    destination: .codex/references/roles/code-reviewer.md
+    substitutions: []
+
+  # Canonical workflow doc — referenced from each consumer's AGENTS.md as
+  # the source of truth for the AI review flow.
+  - source: .codex/REVIEW_WORKFLOW.md
+    destination: .codex/REVIEW_WORKFLOW.md
+    substitutions: []
+
+  # Retired-stub deletes — keep entries here when removing a previously
+  # synced file so consumers prune it on their next sync run.
+  - destination: .codex/skills/pushit/SKILL.md
+    delete: true
+  - destination: .codex/skills/review-cycle/SKILL.md
+    delete: true
+  - destination: .codex/hooks/check-simplify-state.sh
+    delete: true
+
+  # Copilot instructions — generated from the template using the consumer's
+  # placeholder values. Result lands at `.github/copilot-instructions.md`.
+  - source: .github/copilot-instructions.md.template
+    destination: .github/copilot-instructions.md
+    substitutions:
+      - PROJECT_NAME
+      - PROJECT_OVERVIEW
+      - CANONICAL_DOCS
+      - STACK_TABLE
+      - CODE_RULES
+      - DOMAIN_RULES
+      - REVIEW_FOCUS
+      - WHAT_NOT_TO_SUGGEST_EXTRA
+
+  # DCO sign-off check — only relevant for OSS consumers (Apache 2 + DCO is
+  # the standard contract). The canonical version uses `git rev-list
+  # --no-merges` so "Update branch" merge commits, which lack a
+  # Signed-off-by trailer, don't fail the check. Private consumers that
+  # don't need DCO opt out via `skip_targets` in their `.platform-config.yml`.
+  - source: .github/workflows/dco.yml
+    destination: .github/workflows/dco.yml
+    substitutions: []

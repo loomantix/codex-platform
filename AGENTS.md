@@ -1,0 +1,31 @@
+# codex-platform — Agent Guide
+
+Upstream source of truth for Loomantix Codex skills, reusable agent workflows, and repo-sync automation. Apache 2.0 + DCO.
+
+## Repository Policy
+
+This repo is private during bootstrap but intended for future OSS release. Keep public-release hygiene now:
+
+- Do not reference private consumer repositories by name.
+- Do not document private fleet topology, internal escalation paths, or deployment-specific secret names.
+- Keep compliance rationale generic; do not describe private audit findings or control mappings.
+- Put consumer-specific details in the consumer repo, not here.
+
+## Working Rules
+
+- Preserve the agent-agnostic sync engine unless a Codex feature genuinely requires a schema change.
+- Put Codex-discoverable workflows under `.codex/skills/<name>/SKILL.md`.
+- Keep large or optional role prompts under `.codex/references/` and have skills load them only when needed.
+- Consumer-editable files should use `create_if_missing: true` in `scripts/sync-targets.yml`.
+- Files listed in `scripts/sync-targets.yml` are upstream-owned; consumer edits will be overwritten unless the target is skipped.
+
+## Review Workflow
+
+See [`.codex/REVIEW_WORKFLOW.md`](.codex/REVIEW_WORKFLOW.md) for the canonical lean/deep review chain.
+
+## Cross-References
+
+- [README.md](README.md) — install and consumer wiring.
+- [docs/sync.md](docs/sync.md) — sync contract and tag gating.
+- [scripts/sync-targets.yml](scripts/sync-targets.yml) — canonical sync surface.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution workflow.

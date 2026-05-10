@@ -1,0 +1,41 @@
+# Recommended .prettierignore snippet for consumer repos.
+#
+# When to use: if your consumer repo runs Prettier with a config that
+# differs from this repo's canonical .prettierrc, your prettier run will
+# reformat synced files and produce working-tree drift on every sync.
+#
+# Two ways to avoid that:
+#   1. Adopt this repo's .prettierrc verbatim (the cleanest fix).
+#   2. Paste the marker block below into your repo's .prettierignore so
+#      prettier leaves the synced paths alone.
+#
+# Defense-in-depth: even if you adopt the canonical config, leaving this
+# block in place costs nothing and survives a future prettier version
+# bump that changes default behavior.
+#
+# Mechanical replacement: keep the `>>> ... <<<` markers intact so this
+# block can be regenerated in place. Anything outside the markers is
+# yours and won't be touched.
+#
+# Regenerate when scripts/sync-targets.yml changes — the entries below
+# mirror its `destination:` paths (excluding `delete: true` entries and
+# entries that are rendered from a template).
+
+# >>> platform-synced paths <<<
+.codex/REVIEW_WORKFLOW.md
+.codex/agents/code-architect.md
+.codex/agents/code-explorer.md
+.codex/agents/code-reviewer.md
+.codex/settings.json
+.codex/skills/agent-loop/SKILL.md
+.codex/skills/agent-loop/scripts/agent-loop.sh
+.codex/skills/copilot-review/SKILL.md
+.codex/skills/deepgrill/SKILL.md
+.codex/skills/feature-dev/SKILL.md
+.codex/skills/grill/SKILL.md
+.codex/skills/issues/SKILL.md
+.codex/skills/issues/scripts/link.py
+.codex/skills/issues/scripts/ready.py
+.codex/skills/refactorpass/SKILL.md
+.codex/skills/reviewit/SKILL.md
+# <<< platform-synced paths >>>
