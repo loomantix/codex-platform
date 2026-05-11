@@ -108,6 +108,37 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
 - If a reviewer times out in `--wait` mode, continue with findings received and state the timeout in the summary.
 - Keep `.codex/reviewit-state/*.json` out of commits.
 
+## Local Codex Review In Deep Mode
+
+In deep mode, run the local Codex reviewer against the PR diff:
+
+```bash
+codex review --base <base-branch> --title "<pr title>"
+```
+
+If the Codex CLI fails before review starts with a filesystem error such as
+`Read-only file system` or `failed to initialize in-process app-server client`,
+retry the same command with the harness/tool escalation needed to let Codex write
+to its normal state directory, usually `${CODEX_HOME:-$HOME/.codex}`.
+
+Do not work around that failure by setting `CODEX_HOME` to a fresh temp directory.
+A blank temp home drops the user's existing `auth.json`, `config.toml`, and
+provider state, which turns a filesystem problem into an authentication failure
+such as `401 Unauthorized: Missing bearer or basic authentication`.
+
+Bad workaround:
+
+```bash
+CODEX_HOME=/tmp/codex-home codex review --base <base-branch> --title "<pr title>"
+```
+
+Before using any non-default `CODEX_HOME`, verify that it already contains a
+valid Codex auth/config setup or that the environment explicitly provisions API
+credentials for that home. If one escalated retry with the authenticated Codex
+home still fails, record the local Codex reviewer as unavailable in the
+`reviewit` summary and continue with Gemini/Copilot instead of blocking the
+whole review cycle.
+
 ## Output
 
 Summarize mode, iterations, reviewers fired, reviewer status, findings fixed/deferred/dismissed, commits pushed, replies posted, state file path if still waiting, resume command if applicable, and any remaining risks.
