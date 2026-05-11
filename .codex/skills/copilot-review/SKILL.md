@@ -166,7 +166,7 @@ You are helping a developer address GitHub Copilot code review comments on a pul
 **If Fix**:
 
 1. Make the necessary code changes
-2. Run relevant linting: `just lint-fix`
+2. Run the repo's relevant formatter/lint command. Inspect local scripts first (for example `package.json`, `Justfile`, `Makefile`, or repo docs); in pnpm repos this is often `pnpm lint:fix` or `pnpm format`.
 3. Run relevant tests if applicable
 4. Prepare a clear explanation of what was changed
 
@@ -238,8 +238,10 @@ Phase 4 step 6 reads this file and posts one reply per row.
 2. **Run quality checks** (in worktree):
 
    ```bash
-   cd worktrees/copilot-review-<pr-number> && just lint-fix
-   cd worktrees/copilot-review-<pr-number> && just typecheck
+   cd worktrees/copilot-review-<pr-number>
+   # Pick commands that actually exist in this repo. Examples:
+   pnpm lint:fix
+   pnpm typecheck
    ```
 
 3. **Commit changes** (only if there are code changes from "fix" resolutions):
