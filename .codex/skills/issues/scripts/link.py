@@ -15,13 +15,25 @@ import sys
 import tempfile
 
 SECTION_HEADER = "## Dependencies"
+GH_TIMEOUT_SECONDS = 60
+
+
+def fail_gh_timeout(action: str) -> None:
+    sys.stderr.write(
+        f"Timed out after {GH_TIMEOUT_SECONDS}s while running `gh {action}`. "
+        "Check GitHub auth/network connectivity and retry.\n"
+    )
+    sys.exit(1)
 
 
 def fetch_body(num: int) -> str:
-    result = subprocess.run(
-        ["gh", "issue", "view", str(num), "--json", "body"],
-        capture_output=True, text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "view", str(num), "--json", "body"],
+            capture_output=True, text=True, timeout=GH_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        fail_gh_timeout(f"issue view {num}")
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
         sys.exit(result.returncode)
@@ -59,10 +71,13 @@ def set_body(num: int, body: str) -> None:
         fp.write(body)
         path = fp.name
     try:
-        result = subprocess.run(
-            ["gh", "issue", "edit", str(num), "--body-file", path],
-            capture_output=True, text=True,
-        )
+        try:
+            result = subprocess.run(
+                ["gh", "issue", "edit", str(num), "--body-file", path],
+                capture_output=True, text=True, timeout=GH_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            fail_gh_timeout(f"issue edit {num}")
         if result.returncode != 0:
             sys.stderr.write(result.stderr)
             sys.exit(result.returncode)

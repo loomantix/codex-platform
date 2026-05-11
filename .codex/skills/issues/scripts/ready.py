@@ -53,6 +53,27 @@ BLOCKER_RE = re.compile(
 )
 
 LABEL_PREFIXES_TO_SHOW = ("area:", "dev:", "source:", "status:")
+GH_TIMEOUT_SECONDS = 60
+
+
+def run_gh_json(cmd: list[str], action: str) -> Any:
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=GH_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(
+            f"Timed out after {GH_TIMEOUT_SECONDS}s while running `gh {action}`. "
+            "Check GitHub auth/network connectivity and retry.\n"
+        )
+        sys.exit(1)
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        sys.exit(result.returncode)
+    return json.loads(result.stdout)
 
 
 def fetch_issues(extra_args: list[str]) -> list[dict[str, Any]]:
@@ -63,13 +84,7 @@ def fetch_issues(extra_args: list[str]) -> list[dict[str, Any]]:
         "--json", "number,title,body,labels,assignees,url",
         *extra_args,
     ]
-    # 60s timeout: a hung GitHub API can otherwise stall callers (e.g.
-    # /agent-loop) that depend on this probe to advance.
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if result.returncode != 0:
-        sys.stderr.write(result.stderr)
-        sys.exit(result.returncode)
-    return json.loads(result.stdout)
+    return run_gh_json(cmd, "issue list")
 
 
 def fetch_all_open_numbers() -> set[int]:
@@ -79,18 +94,17 @@ def fetch_all_open_numbers() -> set[int]:
     subset, so a dependent with e.g. `--agent` doesn't look ready when its
     blocker lacks the `dev: agent` label.
     """
-    result = subprocess.run(
-        [
-            "gh", "issue", "list",
-            "--state", "open", "--limit", "1000",
-            "--json", "number",
-        ],
-        capture_output=True, text=True, timeout=60,
-    )
-    if result.returncode != 0:
-        sys.stderr.write(result.stderr)
-        sys.exit(result.returncode)
-    return {issue["number"] for issue in json.loads(result.stdout)}
+    return {
+        issue["number"]
+        for issue in run_gh_json(
+            [
+                "gh", "issue", "list",
+                "--state", "open", "--limit", "1000",
+                "--json", "number",
+            ],
+            "issue list",
+        )
+    }
 
 
 def label_names(issue: dict[str, Any]) -> list[str]:
