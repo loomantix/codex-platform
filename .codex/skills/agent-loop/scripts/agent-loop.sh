@@ -623,11 +623,13 @@ if [ "$FINAL_PUSH_OK" = true ] && [ "$COMMIT_COUNT" -gt 0 ]; then
         echo -e "${GREEN}✓${NC} PR already exists: $PR_URL"
     else
         PR_ERR=$(mktemp /tmp/agent-loop-pr-err.XXXXXX)
+        PR_BODY_FILE=$(mktemp /tmp/agent-loop-pr-body.XXXXXX.md)
+        printf '%b' "$PR_BODY" > "$PR_BODY_FILE"
         PR_URL=$(gh pr create \
             --base "$DEFAULT_BRANCH" \
             --head "$COLLECTION_BRANCH" \
             --title "agent-loop: $COLLECTION_BRANCH" \
-            --body "$(echo -e "$PR_BODY")" \
+            --body-file "$PR_BODY_FILE" \
             2>"$PR_ERR") || true
 
         if [ -n "$PR_URL" ]; then
@@ -636,7 +638,7 @@ if [ "$FINAL_PUSH_OK" = true ] && [ "$COMMIT_COUNT" -gt 0 ]; then
             echo -e "${YELLOW}⚠${NC} Could not create PR — first stderr line:"
             head -1 "$PR_ERR" | sed 's/^/    /'
         fi
-        rm -f "$PR_ERR"
+        rm -f "$PR_ERR" "$PR_BODY_FILE"
     fi
 elif [ "$FINAL_PUSH_OK" = true ]; then
     echo -e "${DIM}○ No commits on $COLLECTION_BRANCH — skipping PR${NC}"
