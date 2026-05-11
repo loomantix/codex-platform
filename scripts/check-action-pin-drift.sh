@@ -42,6 +42,9 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
 cd "$repo_root"
 
 FILES=(
+  .github/workflows/ci.yml
+  .github/workflows/dco.yml
+  .github/workflows/gemini-review.yml
   .github/workflows/sync-from-upstream.yml.template
 )
 
@@ -59,7 +62,7 @@ for f in "${FILES[@]}"; do
     # One regex captures all three fields. A line that doesn't match this
     # shape (e.g. SHA pin without a version comment) is treated as a
     # verification failure — the script can't confirm the pin is current.
-    if ! [[ "$line" =~ uses:[[:space:]]+([^@[:space:]]+)@([0-9a-f]{40})[[:space:]]+#[[:space:]]*(v[0-9]+(\.[0-9]+)*) ]]; then
+    if ! [[ "$line" =~ uses:[[:space:]]+([^@[:space:]]+)@([0-9a-f]{40})[[:space:]]+#[[:space:]]*(v?[0-9]+(\.[0-9]+)*) ]]; then
       printf '  ?  %s — could not parse (missing version comment?)\n' "${line## }"
       unverified=$((unverified + 1))
       continue
@@ -72,7 +75,7 @@ for f in "${FILES[@]}"; do
     if [ -n "${upstream_cache[$key]:-}" ]; then
       upstream_sha="${upstream_cache[$key]}"
     else
-      ref=$(gh api "repos/${action}/git/refs/tags/${version}" 2>/dev/null) || {
+      ref=$(gh api "repos/${action}/git/ref/tags/${version}" 2>/dev/null) || {
         printf '  ?  %-40s @ %s — cannot resolve upstream tag\n' "$action" "$version"
         unverified=$((unverified + 1))
         continue
@@ -125,6 +128,6 @@ if [ "$unverified" -gt 0 ]; then
   exit_code=1
 fi
 if [ "$exit_code" -eq 0 ]; then
-  printf '\n✅ All sync-template Action pins match upstream.\n'
+  printf '\n✅ All configured Action pins match upstream.\n'
 fi
 exit "$exit_code"
