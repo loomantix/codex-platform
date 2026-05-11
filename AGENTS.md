@@ -4,7 +4,7 @@ Upstream source of truth for Loomantix Codex skills, reusable agent workflows, a
 
 ## Repository Policy
 
-This repo is private during bootstrap but intended for future OSS release. Keep public-release hygiene now:
+This repo is public-facing. Keep all issues, PRs, comments, and docs suitable for public readers:
 
 - Do not reference private consumer repositories by name.
 - Do not document private fleet topology, internal escalation paths, or deployment-specific secret names.

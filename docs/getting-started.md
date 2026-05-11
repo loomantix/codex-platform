@@ -135,11 +135,11 @@ Consumers track the `sync-v1` tag, not `main`. So a stray push to upstream main 
 
 ```bash
 # in the upstream repo, on main
-git tag sync-v2 -a -m "..."
-git push origin sync-v2
+git tag -af sync-v1 -m "Retag sync-v1 to <reason>" <commit-sha>
+git push --force-with-lease origin sync-v1
 ```
 
-Then either bump `UPSTREAM_REF: sync-v2` in each consumer's workflow, or re-tag `sync-v1` to advance the existing pinned ref by re-pointing the tag (more dangerous; requires `git push --force-with-lease origin sync-v1`).
+The `-v1` suffix is the protocol version, not a content version. Retag `sync-v1` for ordinary content changes. Create `sync-v2` only for a breaking sync-protocol change that requires coordinated consumer workflow updates.
 
 ## Troubleshooting
 

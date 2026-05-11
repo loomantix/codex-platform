@@ -2,7 +2,7 @@
 
 Reusable Codex skills, workflow prompts, and a sync engine for propagating agent tooling into consumer repos. Apache 2.0 + DCO.
 
-> **Status:** private v0.1 bootstrap. This repo is intentionally private while the Codex surface is hardened, but it is licensed Apache 2.0 so it can be opened later without a license migration.
+> **Status:** v0.1. The Codex surface is young, but the repository is structured for public use: Apache 2.0, DCO, public-safe docs, and review-gated sync tooling.
 
 ## What's in here
 

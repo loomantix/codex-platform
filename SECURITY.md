@@ -27,7 +27,7 @@ In scope:
 Out of scope:
 
 - Vulnerabilities in upstream dependencies (PyYAML, GitHub Actions used by the workflow templates) — please report to the upstream.
-- Vulnerabilities in Codex itself or in the Codex CLI — report to Anthropic.
+- Vulnerabilities in Codex itself or in the Codex CLI — report to the Codex upstream maintainers.
 - Misconfiguration of a _consumer_ repo (e.g. a consumer setting `SYNC_APP_PRIVATE_KEY` to an over-privileged App). The consumer owns its threat model.
 
 ## Disclosure policy
