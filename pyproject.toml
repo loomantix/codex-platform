@@ -13,38 +13,32 @@
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-addopts = [
-    "-ra",
-    "--strict-markers",
-    "--strict-config",
-]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
 filterwarnings = [
-    # Treat warnings raised inside our own code as errors so a future
-    # DeprecationWarning surfaces loudly. The scripts are loaded by
-    # `tests/conftest.py` via `spec_from_file_location` under the bare
-    # module names below (the hyphenated source filenames aren't valid
-    # Python identifiers, so `scripts.*` would never match). Stdlib /
-    # third-party warnings stay informational so a transient external
-    # deprecation can't break CI on a green PR.
-    "error:::sync_engine",
-    "error:::create_signed_commit",
+  # Treat warnings raised inside our own code as errors so a future
+  # DeprecationWarning surfaces loudly. The scripts are loaded by
+  # `tests/conftest.py` via `spec_from_file_location` under the bare
+  # module names below (the hyphenated source filenames aren't valid
+  # Python identifiers, so `scripts.*` would never match). Stdlib /
+  # third-party warnings stay informational so a transient external
+  # deprecation can't break CI on a green PR.
+  "error:::sync_engine",
+  "error:::create_signed_commit",
 ]
 
 [tool.coverage.run]
 branch = true
 source = ["scripts"]
-omit = [
-    "tests/*",
-]
+omit = ["tests/*"]
 
 [tool.coverage.report]
 precision = 1
 show_missing = true
 skip_covered = false
 exclude_lines = [
-    "pragma: no cover",
-    "raise NotImplementedError",
-    "if __name__ == .__main__.:",
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
 ]
 
 [tool.mypy]
@@ -54,10 +48,7 @@ strict = true
 # in conftest.py — mypy needs the same view of the source tree to
 # type-check the script bodies in place.
 mypy_path = ["scripts"]
-files = [
-    "scripts",
-    "tests",
-]
+files = ["scripts", "tests"]
 # Scripts use hyphens in filenames (sync-engine.py, create-signed-commit.py)
 # which aren't valid Python module names. Tests import them via importlib;
 # mypy follows the imports without needing module-name resolution.
