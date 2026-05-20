@@ -10,18 +10,18 @@ Reusable Codex skills, workflow prompts, and a sync engine for propagating agent
 
 Operational skills you can install globally or sync into any repo:
 
-| Skill                 | What it does                                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `refactorpass`        | Pre-push cleanup pass for local source changes; skips docs/config-only changesets.                                             |
-| `grill`               | Pre-push adversarial review. Lean default uses high-signal review roles; deep mode broadens the checklist.                     |
-| `deepgrill`           | Orchestrates the deep pre-push review chain.                                                                                   |
-| `reviewit <pr>`       | Post-push AI review orchestrator for Gemini Flash + Copilot, with deduping, fixes, replies, and iteration caps.                |
-| `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                         |
-| `feature-dev`         | Guided feature development: discovery, architecture, implementation, validation.                                               |
-| `issues`              | Thin workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies. |
-| `agent-loop`          | Experimental Codex relay over the issue ready queue using `codex exec`.                                                        |
-| `task-packet`         | Execute a markdown Task Packet end-to-end.                                                                                     |
-| `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                      |
+| Skill                 | What it does                                                                                                                      |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `refactorpass`        | Pre-push cleanup pass for local source changes; runs simplicity/DRY, correctness-preserving, and convention/API cleanup lanes.    |
+| `grill`               | Pre-push adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs the full six-lane matrix. |
+| `deepgrill`           | Orchestrates refactorpass plus `grill deep`; uses independent reviewers when the active Codex runtime permits delegation.         |
+| `reviewit <pr>`       | Post-push AI review orchestrator for Gemini Flash + Copilot, with deduping, fixes, replies, and iteration caps.                   |
+| `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                            |
+| `feature-dev`         | Guided feature development: discovery, architecture, implementation, validation.                                                  |
+| `issues`              | Thin workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies.    |
+| `agent-loop`          | Experimental Codex relay over the issue ready queue using `codex exec`.                                                           |
+| `task-packet`         | Execute a markdown Task Packet end-to-end.                                                                                        |
+| `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                         |
 
 ### Codex references (`.codex/references/`)
 
@@ -30,6 +30,11 @@ Longer role prompts live as references instead of always-loaded instructions:
 - `roles/code-explorer.md`
 - `roles/code-architect.md`
 - `roles/code-reviewer.md`
+- `roles/silent-failure-hunter.md`
+- `roles/type-design-analyzer.md`
+- `roles/comment-analyzer.md`
+- `roles/pr-test-analyzer.md`
+- `roles/security-reviewer.md`
 
 Skills can load these when they need a specialized review, exploration, or architecture stance.
 

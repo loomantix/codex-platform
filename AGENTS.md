@@ -14,6 +14,7 @@ This repo is public-facing. Keep all issues, PRs, comments, and docs suitable fo
 ## Working Rules
 
 - Preserve the agent-agnostic sync engine unless a Codex feature genuinely requires a schema change.
+- Do not do implementation work directly on `main`; create a topic branch and PR back to `main`.
 - Put Codex-discoverable workflows under `.codex/skills/<name>/SKILL.md`.
 - Keep large or optional role prompts under `.codex/references/` and have skills load them only when needed.
 - Consumer-editable files should use `create_if_missing: true` in `scripts/sync-targets.yml`.

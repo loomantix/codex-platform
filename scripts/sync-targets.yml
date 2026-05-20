@@ -88,6 +88,26 @@ targets:
     destination: .codex/references/roles/code-reviewer.md
     substitutions: []
 
+  - source: .codex/references/roles/silent-failure-hunter.md
+    destination: .codex/references/roles/silent-failure-hunter.md
+    substitutions: []
+
+  - source: .codex/references/roles/type-design-analyzer.md
+    destination: .codex/references/roles/type-design-analyzer.md
+    substitutions: []
+
+  - source: .codex/references/roles/comment-analyzer.md
+    destination: .codex/references/roles/comment-analyzer.md
+    substitutions: []
+
+  - source: .codex/references/roles/pr-test-analyzer.md
+    destination: .codex/references/roles/pr-test-analyzer.md
+    substitutions: []
+
+  - source: .codex/references/roles/security-reviewer.md
+    destination: .codex/references/roles/security-reviewer.md
+    substitutions: []
+
   # Canonical workflow doc — referenced from each consumer's AGENTS.md as
   # the source of truth for the AI review flow.
   - source: .codex/REVIEW_WORKFLOW.md

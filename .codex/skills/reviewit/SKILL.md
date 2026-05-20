@@ -10,7 +10,7 @@ Run the post-push review cycle for an open PR.
 ## Modes
 
 - **Lean**: default. Fire Gemini Flash and request Copilot review. Cap at 2 iterations.
-- **Deep**: if the argument includes `deep`. Also run a local Codex review pass and cap at 4 iterations.
+- **Deep**: if the argument includes `deep`. Also run the local Codex deep-review path and cap at 4 iterations.
 - **Resume**: if the argument includes `--resume`, do not fire reviewers again. Load or reconstruct the review state for the current PR head, poll existing reviewer output, then fix/reply.
 
 ## State
@@ -48,13 +48,15 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
    ```
 
 3. Skip or ask before spending reviewer budget on docs/config-only PRs.
-4. If `--resume` is present:
+4. Use an adversarial stance for all local review in this skill: assume there are problems to find, try to disprove safety with code/tests/docs evidence, and report only actionable findings with file/line support.
+5. Bias toward fixing every valid finding in this PR, including nits and cleanup items. Dismiss only invalid findings, false positives, or suggestions that would make the code worse. Defer only valid but extremely large follow-up refactors, roughly 300+ lines or cross-cutting rewrites, and create/link a GitHub issue for each deferral.
+6. If `--resume` is present:
    - Load `.codex/reviewit-state/<pr>.json` if present.
    - If no state file exists, reconstruct enough state from `gh pr view`, PR reviews, PR review comments, issue comments, and workflow runs. Use the current PR head SHA as `headSha`.
    - If the current PR head SHA differs from the saved `headSha`, ask whether to start a new iteration. Do not silently process stale reviewer output.
    - Do not trigger Gemini or request Copilot again unless the saved reviewer request clearly failed or the user explicitly asks to rerun.
    - Continue at the polling/dedupe/fix/reply step.
-5. For each iteration:
+7. For each iteration:
    - Capture current PR head SHA and timestamp before firing reviewers.
    - Write the initial state file.
    - Trigger Gemini Flash:
@@ -80,7 +82,7 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
      ```
 
    - Mark `copilotRequested: true` in the state file.
-   - In deep mode, also run a local Codex review of the PR diff and include those findings in dedupe.
+   - In deep mode, also run local Codex review of the PR diff and include those findings in dedupe. The local pass must be at least as thorough as `grill deep`: code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, and security reviewer. Use independent subagents when the active runtime permits them; otherwise run six separate local passes and disclose that fallback in the summary.
    - Poll PR comments, PR review comments, and PR reviews for a short active budget by default (60-90 seconds). Use `--wait` only when the user explicitly wants Codex to stay blocked.
    - If Gemini or Copilot has not posted after the short budget, stop cleanly and report:
      - PR number
@@ -91,7 +93,7 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
      - exact resume command, for example `reviewit <pr> deep --resume`
    - On resume, poll only reviewer output for the saved `headSha` and comments newer than `startedAt`.
    - Deduplicate findings by file, line, and root cause.
-   - Fix actionable findings, defer valid out-of-scope items to issues, dismiss false positives with rationale.
+   - Fix every valid finding, including nits. Defer only valid but extremely large follow-up refactors to GitHub issues. Dismiss invalid findings and false positives with rationale.
    - Commit and push fixes.
    - Reply to every inline AI comment after pushing, including the fix commit SHA or rationale.
    - Append handled comment ids to the state file so repeated resumes do not duplicate replies.
@@ -138,6 +140,11 @@ credentials for that home. If one escalated retry with the authenticated Codex
 home still fails, record the local Codex reviewer as unavailable in the
 `reviewit` summary and continue with Gemini/Copilot instead of blocking the
 whole review cycle.
+
+The CLI reviewer does not replace the deep-review lane requirement above unless
+it clearly returns equivalent lane coverage. If the CLI review is unavailable,
+too shallow, or does not expose lane-level findings, perform the six local lanes
+manually or with subagents when permitted and include them in dedupe.
 
 ## Output
 
