@@ -10,7 +10,7 @@ Use this for most source-code PRs:
 2. Run the `refactorpass` skill if source files changed. It must execute the cleanup matrix: simplicity/DRY, correctness-preserving cleanup, and convention/API alignment. Use independent subagents when the active runtime permits them; otherwise run three separate local passes and disclose that downgrade.
 3. Run the `grill` skill before pushing. Lean `grill` must execute the two-lane review: code reviewer plus silent failure hunter. Use independent subagents when the active runtime permits them; otherwise run two separate local passes and disclose that downgrade.
 4. Push and open the PR.
-5. Run `reviewit <pr-number>` to trigger Gemini Flash + Copilot, dedupe findings, apply fixes, push, and reply.
+5. Run `reviewit <pr-number>` to trigger Gemini Flash + Copilot, fix Gemini findings first, then fold in Copilot findings when they finish, push, and reply.
 
 ## Deep Path
 
@@ -28,7 +28,7 @@ For docs/config-only changes, skip expensive review automation unless the user e
 
 ## Review Principles
 
-- Keep Gemini and Copilot manual-only; `reviewit` is the orchestrator.
+- Keep Gemini and Copilot manual-only; `reviewit` is the orchestrator. It should not block every iteration on Copilot before acting on Gemini Flash: fire both, fix Gemini/local findings first, then poll and handle Copilot before starting the next iteration.
 - Reply to every actionable AI review comment after fixes are pushed.
 - Do not treat generated AI comments as automatically correct; verify each finding against the code.
 - Fix every valid finding in the PR, including nits. Dismiss invalid findings or suggestions that would make the code worse. Defer only valid but extremely large follow-up refactors, roughly 300+ lines or cross-cutting rewrites, and track each deferral in a GitHub issue.
