@@ -9,8 +9,8 @@ Run the post-push review cycle for an open PR.
 
 ## Modes
 
-- **Lean**: default. Fire Gemini Flash and request Copilot review. Cap at 2 iterations.
-- **Deep**: if the argument includes `deep`. Also run the local Codex deep-review path and cap at 4 iterations.
+- **Lean**: default. Fire Gemini Flash and request Copilot review, but use staggered handling: fix Gemini first, then fold in Copilot when it finishes. Cap at 2 iterations.
+- **Deep**: if the argument includes `deep`. Also run the local Codex deep-review path, fix local/Gemini findings first, then fold in Copilot when it finishes. Cap at 4 iterations.
 - **Resume**: if the argument includes `--resume`, do not fire reviewers again. Load or reconstruct the review state for the current PR head, poll existing reviewer output, then fix/reply.
 
 ## State
@@ -30,6 +30,7 @@ Create the directory if needed. The state file is local agent bookkeeping; do no
 - `iteration`: current iteration number
 - `geminiRunId`: workflow run id when discoverable
 - `copilotRequested`: boolean
+- `phase`: current reviewer phase, such as `awaiting-gemini`, `handling-fast-findings`, `awaiting-copilot`, or `complete`
 - `handledCommentIds`: inline/review/issue comment ids already fixed or replied to
 - `lastPollAt`: UTC timestamp of the most recent poll
 
@@ -82,21 +83,22 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
      ```
 
    - Mark `copilotRequested: true` in the state file.
-   - In deep mode, also run local Codex review of the PR diff and include those findings in dedupe. The local pass must be at least as thorough as `grill deep`: code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, and security reviewer. Use independent subagents when the active runtime permits them; otherwise run six separate local passes and disclose that fallback in the summary.
-   - Poll PR comments, PR review comments, and PR reviews for a short active budget by default (60-90 seconds). Use `--wait` only when the user explicitly wants Codex to stay blocked.
-   - If Gemini or Copilot has not posted after the short budget, stop cleanly and report:
+   - In deep mode, also run local Codex review of the PR diff while Gemini and Copilot are running. Include those findings in the first dedupe/fix pass. The local pass must be at least as thorough as `grill deep`: code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, and security reviewer. Use independent subagents when the active runtime permits them; otherwise run six separate local passes and disclose that fallback in the summary.
+   - Set `phase: awaiting-gemini`. Poll PR comments, PR review comments, PR reviews, and the Gemini workflow run for Gemini output on `headSha`. Use a short active budget by default (60-90 seconds) unless `--wait` is present. Do not wait for Copilot in this phase.
+   - If Gemini has not posted after the short budget and there are no local deep-review findings, stop cleanly and report:
      - PR number
      - `headSha`
      - reviewers fired
      - reviewer status
      - state file path
      - exact resume command, for example `reviewit <pr> deep --resume`
-   - On resume, poll only reviewer output for the saved `headSha` and comments newer than `startedAt`.
-   - Deduplicate findings by file, line, and root cause.
-   - Fix every valid finding, including nits. Defer only valid but extremely large follow-up refactors to GitHub issues. Dismiss invalid findings and false positives with rationale.
-   - Commit and push fixes.
-   - Reply to every inline AI comment after pushing, including the fix commit SHA or rationale.
-   - Append handled comment ids to the state file so repeated resumes do not duplicate replies.
+   - Set `phase: handling-fast-findings`. Deduplicate Gemini plus local deep-review findings by file, line, and root cause. Fix every valid finding, including nits. Defer only valid but extremely large follow-up refactors to GitHub issues. Dismiss invalid findings and false positives with rationale.
+   - Commit and push the Gemini/local fixes before waiting on Copilot.
+   - Reply to every handled Gemini/local inline AI comment after pushing, including the fix commit SHA or rationale. Append handled comment ids to the state file so repeated resumes do not duplicate replies.
+   - Set `phase: awaiting-copilot`. Now poll Copilot output for the original `headSha` and comments newer than `startedAt`. Copilot is allowed to be reviewing the pre-fix head; treat its findings as delayed feedback on that iteration.
+   - If Copilot has not posted yet, poll briefly by default. If `--wait` is present, keep polling until Copilot completes or times out. If Copilot is still missing after the allowed wait, stop cleanly with the same state/resume details; do not start the next iteration until the pending Copilot request is handled or explicitly abandoned.
+   - Deduplicate Copilot findings against already-handled Gemini/local findings and the current working tree. If a Copilot finding was already fixed by the Gemini/local commit, reply with that commit SHA and record it handled. Fix any remaining valid Copilot findings on top of the current head, push, and reply.
+   - On resume, continue from `phase`: poll only reviewer output for the saved `headSha` and comments newer than `startedAt`, then handle only unhandled comment ids.
    - Stop when no actionable findings remain or the iteration cap is reached.
 
 ## Important Details
