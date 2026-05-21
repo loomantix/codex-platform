@@ -18,7 +18,7 @@ Use this for high-risk or complex changes:
 
 1. Run `deepgrill` before pushing. This must execute `refactorpass` plus `grill deep`'s six review lanes: code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, and security reviewer. Use independent subagents when the active runtime permits them; otherwise run six separate local passes and disclose that downgrade.
 2. Push and open the PR.
-3. Run `reviewit <pr-number> deep`.
+3. Run `reviewit <pr-number> deep`. Deep mode fires the same two bot reviewers as lean (Gemini Flash + Copilot) but with a 4-iteration cap, an early-exit when an iteration produces no `fix` resolutions (defer/dismiss-only doesn't justify another round), and a final `deepgrill` invocation after the loop exits so fresh subagents review the PR's current state in a separate session. The old in-loop `codex review` is gone — running it inside the polling loop routinely dropped the orchestrator out early.
 
 Choose deep when the change touches auth, crypto, secret handling, schema/data shape, GitHub Actions, sync tooling, `.codex/skills/**`, or a large refactor.
 
@@ -32,7 +32,8 @@ When you want a second engine's eyes on a PR another engine authored, run `pr-gr
 
 ## Review Principles
 
-- Keep Gemini and Copilot manual-only; `reviewit` is the orchestrator. It should not block every iteration on Copilot before acting on Gemini Flash: fire both, fix Gemini/local findings first, then poll and handle Copilot before starting the next iteration.
+- Keep Gemini and Copilot manual-only; `reviewit` is the orchestrator. It should not block every iteration on Copilot before acting on Gemini Flash: fire both, fix Gemini findings first, then poll and handle Copilot before starting the next iteration.
+- In deep mode, fresh-agent local review (`deepgrill`) runs **once at the end** of the bot loop, not during it. Inline local review inside the polling loop is what historically broke `reviewit` deep — keep the loop bot-only.
 - Reply to every actionable AI review comment after fixes are pushed.
 - Do not treat generated AI comments as automatically correct; verify each finding against the code.
 - Fix every valid finding in the PR, including nits. Dismiss invalid findings or suggestions that would make the code worse. Defer only valid but extremely large follow-up refactors, roughly 300+ lines or cross-cutting rewrites, and track each deferral in a GitHub issue.

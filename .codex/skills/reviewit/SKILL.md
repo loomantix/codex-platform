@@ -1,6 +1,6 @@
 ---
 name: reviewit
-description: Post-push AI review orchestrator for pull requests. Use when the user asks Codex to run AI review on a PR, address Gemini or Copilot findings, dedupe reviewer comments, push fixes, reply in PR threads, or complete the platform review chain. Accepts a PR number, optional deep mode, and optional --resume.
+description: Post-push AI review orchestrator for pull requests. Use when the user asks Codex to run AI review on a PR, address Gemini or Copilot findings, dedupe reviewer comments, push fixes, reply in PR threads, or complete the platform review chain. Both modes fire Gemini Flash + Copilot only — no in-skill local review during the loop. Accepts a PR number, optional `deep` (4-iter cap + early-exit on no-fix iters + final `deepgrill`), and optional `--resume`.
 ---
 
 # Reviewit
@@ -10,8 +10,8 @@ Run the post-push review cycle for an open PR.
 ## Modes
 
 - **Lean**: default. Fire Gemini Flash and request Copilot review, but use staggered handling: fix Gemini first, then fold in Copilot when it finishes. Cap at 2 iterations.
-- **Deep**: if the argument includes `deep`. Also run the local Codex deep-review path, fix local/Gemini findings first, then fold in Copilot when it finishes. Cap at 4 iterations.
-- **Resume**: if the argument includes `--resume`, do not fire reviewers again. Load or reconstruct the review state for the current PR head, poll existing reviewer output, then fix/reply.
+- **Deep**: if the argument includes `deep`. Same two reviewers as lean — no in-loop local Codex review. Cap at 4 iterations with an **early-exit when an iteration produces no `fix` resolutions** (defer/dismiss-only iterations don't justify re-firing reviewers on an unchanged HEAD — they'd just re-post the same findings). After the loop exits for any reason — clean, early-exit, or iter cap — invoke the `deepgrill` skill so fresh subagents review the PR's current state in a separate session. This replaces the prior pattern of running `codex review` inline during the polling loop, which routinely caused the orchestrator to drop out early because the inline-review sub-skill's prompt was self-contained.
+- **Resume**: if the argument includes `--resume`, do not fire reviewers again. Load or reconstruct the review state for the current PR head, poll existing reviewer output, then fix/reply (and, in deep mode, run the final `deepgrill` if it didn't yet).
 
 ## State
 
@@ -30,9 +30,10 @@ Create the directory if needed. The state file is local agent bookkeeping; do no
 - `iteration`: current iteration number
 - `geminiRunId`: workflow run id when discoverable
 - `copilotRequested`: boolean
-- `phase`: current reviewer phase, such as `awaiting-gemini`, `handling-fast-findings`, `awaiting-copilot`, or `complete`
+- `phase`: current reviewer phase, such as `awaiting-gemini`, `handling-fast-findings`, `awaiting-copilot`, `final-deepgrill` (deep mode only), or `complete`
 - `handledCommentIds`: inline/review/issue comment ids already fixed or replied to
 - `lastPollAt`: UTC timestamp of the most recent poll
+- `deepgrillRan` (deep mode only): boolean — set once the final `deepgrill` invocation has returned
 
 If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate ignore file before writing state.
 
@@ -56,8 +57,8 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
    - If no state file exists, reconstruct enough state from `gh pr view`, PR reviews, PR review comments, issue comments, and workflow runs. Use the current PR head SHA as `headSha`.
    - If the current PR head SHA differs from the saved `headSha`, ask whether to start a new iteration. Do not silently process stale reviewer output.
    - Do not trigger Gemini or request Copilot again unless the saved reviewer request clearly failed or the user explicitly asks to rerun.
-   - Continue at the polling/dedupe/fix/reply step.
-7. For each iteration:
+   - Continue at the polling/dedupe/fix/reply step. If the saved `phase` is `final-deepgrill` and `deepgrillRan` is false, resume by invoking the `deepgrill` skill directly (skip the bot polling loop).
+7. For each iteration up to the cap:
    - Capture current PR head SHA and timestamp before firing reviewers.
    - Write the initial state file.
    - Trigger Gemini Flash:
@@ -83,23 +84,26 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
      ```
 
    - Mark `copilotRequested: true` in the state file.
-   - In deep mode, also run local Codex review of the PR diff while Gemini and Copilot are running. Include those findings in the first dedupe/fix pass. The local pass must be at least as thorough as `grill deep`: code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, and security reviewer. Use independent subagents when the active runtime permits them; otherwise run six separate local passes and disclose that fallback in the summary.
    - Set `phase: awaiting-gemini`. Poll PR comments, PR review comments, PR reviews, and the Gemini workflow run for Gemini output on `headSha`. Use a short active budget by default (60-90 seconds) unless `--wait` is present. Do not wait for Copilot in this phase.
-   - If Gemini has not posted after the short budget and there are no local deep-review findings, stop cleanly and report:
+   - If Gemini has not posted after the short budget, stop cleanly and report:
      - PR number
      - `headSha`
      - reviewers fired
      - reviewer status
      - state file path
      - exact resume command, for example `reviewit <pr> deep --resume`
-   - Set `phase: handling-fast-findings`. Deduplicate Gemini plus local deep-review findings by file, line, and root cause. Fix every valid finding, including nits. Defer only valid but extremely large follow-up refactors to GitHub issues. Dismiss invalid findings and false positives with rationale.
-   - Commit and push the Gemini/local fixes before waiting on Copilot.
-   - Reply to every handled Gemini/local inline AI comment after pushing, including the fix commit SHA or rationale. Append handled comment ids to the state file so repeated resumes do not duplicate replies.
+   - Set `phase: handling-fast-findings`. Deduplicate Gemini findings by file, line, and root cause. Fix every valid finding, including nits. Defer only valid but extremely large follow-up refactors to GitHub issues. Dismiss invalid findings and false positives with rationale.
+   - Commit and push the Gemini fixes before waiting on Copilot. If Gemini produced no `fix` resolutions (everything deferred or dismissed, or nothing actionable), skip the commit/push but still process replies.
+   - Reply to every handled Gemini inline AI comment after pushing, including the fix commit SHA or rationale. Append handled comment ids to the state file so repeated resumes do not duplicate replies.
    - Set `phase: awaiting-copilot`. Now poll Copilot output for the original `headSha` and comments newer than `startedAt`. Copilot is allowed to be reviewing the pre-fix head; treat its findings as delayed feedback on that iteration.
    - If Copilot has not posted yet, poll briefly by default. If `--wait` is present, keep polling until Copilot completes or times out. If Copilot is still missing after the allowed wait, stop cleanly with the same state/resume details; do not start the next iteration until the pending Copilot request is handled or explicitly abandoned.
-   - Deduplicate Copilot findings against already-handled Gemini/local findings and the current working tree. If a Copilot finding was already fixed by the Gemini/local commit, reply with that commit SHA and record it handled. Fix any remaining valid Copilot findings on top of the current head, push, and reply.
+   - Deduplicate Copilot findings against already-handled Gemini findings and the current working tree. If a Copilot finding was already fixed by the Gemini commit, reply with that commit SHA and record it handled. Fix any remaining valid Copilot findings on top of the current head, push, and reply.
    - On resume, continue from `phase`: poll only reviewer output for the saved `headSha` and comments newer than `startedAt`, then handle only unhandled comment ids.
-   - Stop when no actionable findings remain or the iteration cap is reached.
+   - Loop control:
+     - **Lean**: continue to the next iteration if any reviewer found new findings on the post-fix HEAD and the cap is not reached. Otherwise exit the loop.
+     - **Deep**: continue to the next iteration only if this iteration produced ≥1 `fix` resolution (a commit was pushed) and the cap is not reached. If the iteration produced only defer/dismiss findings (or none at all), **early-exit** the loop — re-firing reviewers on an unchanged HEAD just re-posts the same findings.
+
+8. **Deep mode only — final `deepgrill`.** After the loop exits for any reason (clean, early-exit, or iter cap), set `phase: final-deepgrill` and invoke the `deepgrill` skill. `deepgrill` runs `refactorpass` plus `grill deep`'s six lanes (code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, security reviewer) — fresh subagent sessions on the PR's current state when the runtime permits subagents, or six sequential local passes otherwise. When control returns from the sub-skill, set `deepgrillRan: true`, capture the sub-skill's output, and continue to the summary step. **Do not stop after `deepgrill` returns** — `reviewit` owns the final summary.
 
 ## Important Details
 
@@ -111,43 +115,18 @@ If `.codex/reviewit-state/` is not gitignored, add it to a repo-appropriate igno
 - Do not reply before pushing fixes; replies should reference the real commit SHA.
 - If a reviewer times out in `--wait` mode, continue with findings received and state the timeout in the summary.
 - Keep `.codex/reviewit-state/*.json` out of commits.
-
-## Local Codex Review In Deep Mode
-
-In deep mode, run the local Codex reviewer against the PR diff:
-
-```bash
-codex review --base <base-branch> --title "<pr title>"
-```
-
-If the Codex CLI fails before review starts with a filesystem error such as
-`Read-only file system` or `failed to initialize in-process app-server client`,
-retry the same command with the harness/tool escalation needed to let Codex write
-to its normal state directory, usually `${CODEX_HOME:-$HOME/.codex}`.
-
-Do not work around that failure by setting `CODEX_HOME` to a fresh temp directory.
-A blank temp home drops the user's existing `auth.json`, `config.toml`, and
-provider state, which turns a filesystem problem into an authentication failure
-such as `401 Unauthorized: Missing bearer or basic authentication`.
-
-Bad workaround:
-
-```bash
-CODEX_HOME=/tmp/codex-home codex review --base <base-branch> --title "<pr title>"
-```
-
-Before using any non-default `CODEX_HOME`, verify that it already contains a
-valid Codex auth/config setup or that the environment explicitly provisions API
-credentials for that home. If one escalated retry with the authenticated Codex
-home still fails, record the local Codex reviewer as unavailable in the
-`reviewit` summary and continue with Gemini/Copilot instead of blocking the
-whole review cycle.
-
-The CLI reviewer does not replace the deep-review lane requirement above unless
-it clearly returns equivalent lane coverage. If the CLI review is unavailable,
-too shallow, or does not expose lane-level findings, perform the six local lanes
-manually or with subagents when permitted and include them in dedupe.
+- The final `deepgrill` in deep mode is **always** run after the loop exits — clean, early-exit, or iter cap. Fresh subagents are most useful precisely when the bot reviewer loop didn't fully converge, so do not gate `deepgrill` on the loop's exit reason.
+- If `deepgrill` fails or is interrupted, record the failure in the summary and continue — the bot reviewer loop's output is still valid. Do not auto-retry.
 
 ## Output
 
-Summarize mode, iterations, reviewers fired, reviewer status, findings fixed/deferred/dismissed, commits pushed, replies posted, state file path if still waiting, resume command if applicable, and any remaining risks.
+Summarize:
+
+- mode, iterations completed, reviewers fired and their status
+- findings fixed / deferred / dismissed counts and links
+- commits pushed
+- replies posted (and any failed reply targets)
+- deep-mode `deepgrill` result: whether `refactorpass` produced a commit, and the count of `grill deep` findings the user chose to fix / defer / ignore
+- state file path if still waiting
+- resume command if applicable
+- any remaining risks
