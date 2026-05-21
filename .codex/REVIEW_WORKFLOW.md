@@ -7,8 +7,8 @@ This file is synced from `codex-platform` into consumer repos. Consumer-specific
 Use this for most source-code PRs:
 
 1. Make the local change.
-2. Run the `refactorpass` skill if source files changed.
-3. Run the `grill` skill before pushing.
+2. Run the `refactorpass` skill if source files changed. It must execute the cleanup matrix: simplicity/DRY, correctness-preserving cleanup, and convention/API alignment. Use independent subagents when the active runtime permits them; otherwise run three separate local passes and disclose that downgrade.
+3. Run the `grill` skill before pushing. Lean `grill` must execute the two-lane review: code reviewer plus silent failure hunter. Use independent subagents when the active runtime permits them; otherwise run two separate local passes and disclose that downgrade.
 4. Push and open the PR.
 5. Run `reviewit <pr-number>` to trigger Gemini Flash + Copilot, dedupe findings, apply fixes, push, and reply.
 
@@ -16,7 +16,7 @@ Use this for most source-code PRs:
 
 Use this for high-risk or complex changes:
 
-1. Run `deepgrill` before pushing.
+1. Run `deepgrill` before pushing. This must execute `refactorpass` plus `grill deep`'s six review lanes: code reviewer, silent failure hunter, type/API design analyzer, comment/docs analyzer, PR test analyzer, and security reviewer. Use independent subagents when the active runtime permits them; otherwise run six separate local passes and disclose that downgrade.
 2. Push and open the PR.
 3. Run `reviewit <pr-number> deep`.
 
@@ -31,4 +31,5 @@ For docs/config-only changes, skip expensive review automation unless the user e
 - Keep Gemini and Copilot manual-only; `reviewit` is the orchestrator.
 - Reply to every actionable AI review comment after fixes are pushed.
 - Do not treat generated AI comments as automatically correct; verify each finding against the code.
+- Fix every valid finding in the PR, including nits. Dismiss invalid findings or suggestions that would make the code worse. Defer only valid but extremely large follow-up refactors, roughly 300+ lines or cross-cutting rewrites, and track each deferral in a GitHub issue.
 - Stop at the iteration cap and hand back a clear summary if findings keep recurring.

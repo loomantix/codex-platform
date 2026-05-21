@@ -68,8 +68,8 @@ If you discover any of these mid-issue, **stop, comment on the issue with what y
 
 Before pushing your PR, run the lean review chain (skip on docs/config-only changes):
 
-1. `refactorpass` — single Codex cleanup pass.
-2. `/grill` — runs `code-reviewer` and `silent-failure-hunter` agents on the diff.
+1. `refactorpass` — runs the cleanup matrix: simplicity/DRY, correctness-preserving cleanup, and convention/API alignment.
+2. `/grill` — runs the lean two-lane review: `code-reviewer` and `silent-failure-hunter`. Use independent agents when the active runtime permits delegation; otherwise disclose the local two-pass fallback.
 
 ## PR shape
 

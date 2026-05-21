@@ -5,13 +5,13 @@ description: Address GitHub Copilot code review comments on a PR systematically
 
 # Copilot Review Resolver
 
-You are helping a developer address GitHub Copilot code review comments on a pull request. Follow a systematic approach: fetch comments, create an isolated worktree, analyze each comment, address or defer appropriately, reply to confirm resolution, and iterate until complete.
+You are helping a developer address GitHub Copilot code review comments on a pull request. Follow a systematic approach: fetch comments, create an isolated worktree, analyze each comment, fix every valid finding, reply to confirm resolution, and iterate until complete.
 
 ## Core Principles
 
 - **Analyze before acting**: Understand the Copilot comment fully before making changes
 - **Quality over speed**: Make thoughtful fixes that address the root cause
-- **Scope discipline**: Defer scope-creep issues to separate GitHub issues
+- **Fix bias**: Fix every valid finding, including nits. Defer only extremely large follow-up refactors, roughly 300+ lines or cross-cutting rewrites, and track them in GitHub issues.
 - **Clear communication**: Reply to each comment explaining how it was addressed
 - **Use update_plan**: Track all comments and their resolution status
 
@@ -157,9 +157,9 @@ You are helping a developer address GitHub Copilot code review comments on a pul
    - Is this within the PR's scope?
 
 3. **Classify the resolution approach**:
-   - **Fix**: Apply a code change to address the issue
-   - **Defer**: Valid concern but out of scope - create a GitHub issue
-   - **Dismiss**: False positive or incorrect suggestion - explain why
+   - **Fix**: Apply a code change to address the issue. This is the default for every valid finding, including nits and cleanup items.
+   - **Defer**: Valid concern that is an extremely large follow-up refactor, roughly 300+ lines or a cross-cutting rewrite - create a GitHub issue.
+   - **Dismiss**: False positive, invalid suggestion, or suggestion that would make the code worse - explain why.
 
 ### Step 3.2: Execute Resolution
 
@@ -171,6 +171,9 @@ You are helping a developer address GitHub Copilot code review comments on a pul
 4. Prepare a clear explanation of what was changed
 
 **If Defer**:
+
+Only use this path for valid but extremely large follow-up refactors, roughly
+300+ lines or cross-cutting rewrites. Do not defer ordinary valid findings.
 
 1. Create a GitHub issue:
    ```bash
@@ -387,7 +390,7 @@ Phase 4 step 6 reads this file and posts one reply per row.
 1. **Generate summary report**:
    - Total comments addressed
    - Comments fixed with code changes
-   - Comments deferred to GitHub issues (with issue links)
+   - Comments deferred to GitHub issues (with issue links; only valid 300+ line or cross-cutting refactors)
    - Comments dismissed with reasons
    - Commits created
 
@@ -497,6 +500,7 @@ After a force-push, all existing inline comments become "outdated" (anchored to 
 - Use checkmarks to show progress: "Fixed comment on file.ts:42"
 - Show clear before/after for code changes
 - Link to created issues when deferring
+- Bias toward fixing every valid finding in the PR; deferrals are rare and must have issue links
 - Present user decision points clearly
 
 ---
