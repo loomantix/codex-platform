@@ -355,6 +355,28 @@ PUSH_FAILURES=0
 MAX_CLAIM_FAILURES=3
 MAX_PUSH_FAILURES=2
 
+# Locked region — one-shot prompt template resolution.
+# Bail before the first claim happens if the template is unusable, so a
+# misconfigured prompt.txt can't leave a half-orphaned issue behind.
+PROMPT_FILE="$PROJECT_DIR/.codex/skills/agent-loop/prompt.txt"
+if [ -s "$PROMPT_FILE" ] && [ -r "$PROMPT_FILE" ]; then
+    PROMPT_TEMPLATE=$(cat "$PROMPT_FILE")
+else
+    # Fallback for consumers between repo creation and first upstream sync.
+    PROMPT_TEMPLATE="Read @agent-loop-instructions.md and follow the instructions. Your assigned issue is #{ISSUE_ID}. Run 'gh issue view {ISSUE_ID}' to see the full description, then complete it."
+fi
+if [ -z "$PROMPT_TEMPLATE" ]; then
+    echo -e "${RED}✗${NC} prompt template empty after read — aborting"
+    exit 1
+fi
+# The substitution silently no-ops without this placeholder, which would
+# launch Codex with an issue-less prompt and either wrong-task or stall.
+if [[ "$PROMPT_TEMPLATE" != *"{ISSUE_ID}"* ]]; then
+    echo -e "${RED}✗${NC} prompt template missing {ISSUE_ID} placeholder: $PROMPT_FILE"
+    echo "    Restore the placeholder or delete the file to use the upstream default."
+    exit 1
+fi
+
 while [ $ITERATION -lt $MAX_ITERATIONS ]; do
     if ! git diff --quiet || ! git diff --cached --quiet; then
         echo -e "${YELLOW}› Dirty working tree — resetting to last commit...${NC}"
@@ -468,11 +490,20 @@ while [ $ITERATION -lt $MAX_ITERATIONS ]; do
     # would hide these and the loop would just see an empty FIFO.
     CODEX_ERR="$ITER_TMPDIR/codex.err"
 
+    # Template resolution + validation happens once before the loop so a
+    # config error can't orphan a claim. Keep an explicit numeric guard even
+    # though pick_next_issue's number-from-jq path is digits today.
+    if ! [[ "$CLAIMED_ID" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}✗${NC} CLAIMED_ID is not numeric: $CLAIMED_ID"
+        exit 1
+    fi
+    PROMPT="${PROMPT_TEMPLATE//\{ISSUE_ID\}/$CLAIMED_ID}"
+
     codex exec \
         --dangerously-bypass-approvals-and-sandbox \
         --json \
         -C "$WORKTREE_DIR" \
-        "Read @agent-loop-instructions.md and follow the instructions. Your assigned issue is #$CLAIMED_ID. Run 'gh issue view $CLAIMED_ID' to see the full description, then complete it." \
+        "$PROMPT" \
         > "$FIFO" 2> "$CODEX_ERR" &
     CODEX_PID=$!
 
