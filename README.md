@@ -48,15 +48,19 @@ The sync engine is intentionally agent-agnostic:
 
 ## Install
 
+Install the skills once per developer machine before expecting slash-skill commands such as `deepgrill`, `reviewit`, or `agent-loop` to resolve:
+
 ```bash
 git clone https://github.com/loomantix/codex-platform.git
 cd codex-platform
-./scripts/install-skills.sh           # symlink skills into ~/.codex/skills/
 ./scripts/install-skills.sh --dry-run # report what would happen
+./scripts/install-skills.sh           # symlink missing skills into ~/.codex/skills/
 ./scripts/install-skills.sh --force   # replace existing entries after backup
 ```
 
 Updates flow through `git pull` in this checkout. Existing symlinks pick up edits automatically.
+
+If a skill command is not found in a Codex session, run the dry-run check from this checkout. Use the normal installer for missing links; use `--force` only when the dry-run reports stale symlinks or regular files that should be replaced. Start a fresh Codex session after changing installed skills so discovery reloads.
 
 ## Wire Up A Consumer Repo
 
