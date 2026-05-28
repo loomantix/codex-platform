@@ -5,6 +5,23 @@ description: High-fidelity pre-push Codex review chain. Use for complex or high-
 
 # Deep Grill
 
+## Context Window Check
+
+Run this check before anything else. `deepgrill` is the most cache-hungry skill in the chain — it runs `refactorpass` (cleanup matrix) and then `grill deep` (six independent review lanes). When subagents/delegation are available, the six lanes run in parallel, each inheriting cache state from this session; when subagents are not available the lanes run as six serial local passes against the same context. Either way, if the current Codex session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and the whole chain runs slower and more expensively.
+
+Assess honestly:
+
+- Has this session been writing/editing the feature about to be reviewed? Long conversation, many file edits, dense planning?
+- Is the conversation about to brush against compaction territory?
+
+If either is yes, stop and tell the user:
+
+> Your context is heavy from the implementation work. Start a new Codex session and run `deepgrill` there. `deepgrill` spawns up to six review lanes and is the chain that benefits most from cache headroom. A fresh session makes the chain materially cheaper.
+
+Do not proceed in the current session unless the user explicitly overrides.
+
+## Chain
+
 Run the full high-fidelity pre-push chain:
 
 1. Execute the `refactorpass` workflow.
@@ -39,4 +56,11 @@ Next:
   git push
   gh pr create --title "..." --body "..."
   reviewit <pr-number> deep
+
+Run `reviewit <pr-number> deep` in a FRESH Codex session.
+The current session has absorbed refactorpass output, six deep-grill review
+lanes, and any fix commits — cache pressure is high. `reviewit deep` runs
+up to four review iterations and a final deepgrill against the PR; each
+step needs cache headroom. A fresh session for `reviewit deep` makes the
+full chain materially cheaper.
 ```

@@ -7,6 +7,21 @@ description: Pre-push adversarial code review for Codex. Use after implementatio
 
 Review the local diff adversarially before push. The goal is to catch bugs, missing tests, security issues, and convention violations while fixes are still local.
 
+## Context Window Check
+
+Run this check before anything else. `grill` runs adversarial review lanes — two in lean mode, six in deep — each of which reads the diff, reads changed files, and produces structured findings. When subagents/delegation are available the lanes run in parallel, and each subagent inherits cache state from this session; when subagents are not available the lanes run as serial local passes that compete for the same context. Either way, if the current Codex session has already been heavily used for feature implementation, the lanes start with sharply reduced working windows and `grill` (especially `grill deep`) runs slower and more expensively.
+
+Assess honestly:
+
+- Has this session been writing/editing the feature about to be grilled? Long conversation, many file edits, dense planning?
+- Is the conversation about to brush against compaction territory?
+
+If either is yes, stop and tell the user:
+
+> Your context is heavy from the implementation work. Start a new Codex session and run `grill` (or `deepgrill`) there. `grill deep`'s six lanes especially need cache headroom and a fresh session makes the chain materially cheaper.
+
+Do not proceed in the current session unless the user explicitly overrides.
+
 ## Adversarial Stance
 
 Assume there are problems to find. Treat the diff as guilty until each risk is
@@ -24,9 +39,16 @@ privately or list it as dismissed with the evidence that disproved it.
 Fix every valid finding in the current PR, including small nits and cleanup
 items. Do not defer valid findings just because they are inconvenient or
 "out of scope." Only dismiss invalid findings, false positives, or suggestions
-that would make the code worse. Defer only when the finding is a valid but
-extremely large follow-up refactor, roughly 300+ lines or a cross-cutting
-rewrite; create or link a GitHub issue for every deferral.
+that would make the code worse.
+
+Defer only when the fix is a major architectural rework — roughly 300+ lines
+or a cross-cutting redesign — and in that case file a GitHub issue at
+deferral time rather than leaving the suggestion as an undocumented todo. A
+"deferred" finding without a tracked issue is not allowed.
+
+Reason: every valid finding that ships becomes the floor for the next PR in
+this area. Letting them accrue as "deferred" turns the backlog into review
+noise and makes future grills more expensive.
 
 ## Mode
 
@@ -81,7 +103,7 @@ Run these lanes as independently as the active runtime permits:
    - `.codex/references/roles/security-reviewer.md`
      Keep lane findings separated until all lanes complete, then deduplicate by root cause.
 6. Report only findings that are specific, actionable, and supported by file/line evidence.
-7. For each finding, fix it unless it is invalid or a valid extremely large follow-up refactor. Dismiss invalid findings with evidence. Defer only 300+ line or cross-cutting refactors, and track each deferral in a GitHub issue.
+7. For each finding, fix it unless it is invalid or a valid major architectural rework. Dismiss invalid findings with evidence. Defer only 300+ line or cross-cutting refactors, and track each deferral in a GitHub issue at deferral time — undocumented deferrals are not allowed.
 8. Critical correctness/security findings must not be silently ignored.
 9. Run targeted validation for any fixes.
 
@@ -91,6 +113,6 @@ End with:
 
 - review depth: lean with independent subagents, lean local two-pass fallback, deep with independent subagents, or deep local six-pass fallback
 - findings fixed
-- findings deferred or dismissed
+- findings deferred (with linked GitHub issue) or dismissed (with one-line evidence)
 - validation run
-- whether the change should use `reviewit <pr>` or `reviewit <pr> deep` after PR creation
+- whether the change should use `reviewit <pr>` or `reviewit <pr> deep` after PR creation, **and a recommendation to run `reviewit` in a fresh Codex session**. The current session has just absorbed grill findings, fix commits, and (in deep mode) six lanes of review output; `reviewit` drives multiple Gemini/Copilot iterations and benefits from cache headroom. A fresh session for `reviewit` is materially cheaper.

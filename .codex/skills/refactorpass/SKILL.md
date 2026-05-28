@@ -7,6 +7,25 @@ description: Pre-push cleanup pass for Codex. Use when the user asks for refacto
 
 Run a structured, behavior-preserving cleanup pass on the current branch before review. This is not a broad refactor. The goal is to make the fresh diff simpler, easier to review, and less brittle without changing feature behavior.
 
+## Context Window Check
+
+Run this check before anything else. `refactorpass` (and the `grill` that typically follows) does diff-reading, multi-lane reviewing, and edit application — all cache-hungry. If the current Codex session has already been heavily used for feature implementation, the cache is largely spent on context the cleanup pass does not need, and the downstream `grill` (especially `grill deep`'s six independent lanes) will be measurably slower and more expensive.
+
+Assess honestly:
+
+- Has this session been writing/editing the feature about to be cleaned up? Long conversation, many file edits, dense planning?
+- Is the conversation about to brush against compaction territory?
+
+If either is yes, stop and tell the user:
+
+> Your context is heavy from the implementation work. Start a new Codex session and run `refactorpass` (and `grill` / `deepgrill`) there. The downstream lanes need cache headroom and a fresh session makes the chain materially cheaper.
+
+Do not proceed in the current session unless the user explicitly overrides.
+
+## Fix Bias
+
+Apply every valid cleanup `refactorpass` surfaces in this pass. Skip suggestions only when they are wrong: would change behavior, would make the code worse, would introduce speculative abstraction, or are based on a misread of the diff. Do not defer valid cleanups to a "follow-up PR" — the only legitimate defer is a major architectural rework (roughly 300+ lines or a cross-cutting redesign), and in that case file a GitHub issue at deferral time rather than leaving the suggestion as an undocumented todo. Reason: every valid cleanup that ships becomes the floor for the next PR in this area, and letting them accrue as "deferred" turns the backlog into review noise and makes future cleanups more expensive.
+
 ## Cleanup Matrix
 
 Refactorpass must cover three lanes:
