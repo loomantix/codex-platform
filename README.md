@@ -10,18 +10,18 @@ Reusable Codex skills, workflow prompts, and a sync engine for propagating agent
 
 Operational skills you can install globally or sync into any repo:
 
-| Skill                 | What it does                                                                                                                         |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `refactorpass`        | Pre-push cleanup pass for local source changes; runs simplicity/DRY, correctness-preserving, and convention/API cleanup lanes.       |
-| `grill`               | Pre-push adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs the full six-lane matrix.    |
-| `deepgrill`           | Orchestrates refactorpass plus `grill deep`; uses independent reviewers when the active Codex runtime permits delegation.            |
-| `reviewit <pr>`       | Post-push AI review orchestrator for Gemini Flash + Copilot, handling Gemini first and folding in Copilot before the next iteration. |
-| `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                               |
-| `feature-dev`         | Guided feature development: discovery, architecture, implementation, validation.                                                     |
-| `issues`              | Thin workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies.       |
-| `agent-loop`          | Experimental Codex relay over the issue ready queue using `codex exec`.                                                              |
-| `task-packet`         | Execute a markdown Task Packet end-to-end.                                                                                           |
-| `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                            |
+| Skill                 | What it does                                                                                                                                                                                                                                                                     |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refactorpass`        | Pre-push cleanup pass for local source changes; runs simplicity/DRY, correctness-preserving, and convention/API cleanup lanes.                                                                                                                                                   |
+| `grill`               | Pre-push adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs the full six-lane matrix.                                                                                                                                                |
+| `deepgrill`           | Orchestrates refactorpass plus `grill deep`; uses independent reviewers when the active Codex runtime permits delegation.                                                                                                                                                        |
+| `reviewit <pr>`       | Post-push AI review orchestrator for Gemini Flash + Copilot. Lean default caps at 2 iterations. `deep` arg bumps the cap to 4, early-exits when an iteration produces no `fix` resolutions, and ends with a final `deepgrill` so fresh subagents look at the PR's current state. |
+| `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                                                                                                                                                                           |
+| `feature-dev`         | Guided feature development: discovery, architecture, implementation, validation.                                                                                                                                                                                                 |
+| `issues`              | Thin workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies.                                                                                                                                                   |
+| `agent-loop`          | Experimental Codex relay over the issue ready queue using `codex exec`.                                                                                                                                                                                                          |
+| `task-packet`         | Execute a markdown Task Packet end-to-end.                                                                                                                                                                                                                                       |
+| `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                                                                                                                                                                        |
 
 ### Codex references (`.codex/references/`)
 
@@ -48,15 +48,19 @@ The sync engine is intentionally agent-agnostic:
 
 ## Install
 
+Install the skills once per developer machine before expecting slash-skill commands such as `deepgrill`, `reviewit`, or `agent-loop` to resolve:
+
 ```bash
 git clone https://github.com/loomantix/codex-platform.git
 cd codex-platform
-./scripts/install-skills.sh           # symlink skills into ~/.codex/skills/
 ./scripts/install-skills.sh --dry-run # report what would happen
+./scripts/install-skills.sh           # symlink missing skills into ~/.codex/skills/
 ./scripts/install-skills.sh --force   # replace existing entries after backup
 ```
 
 Updates flow through `git pull` in this checkout. Existing symlinks pick up edits automatically.
+
+If a skill command is not found in a Codex session, run the dry-run check from this checkout. Use the normal installer for missing links; use `--force` only when the dry-run reports stale symlinks or regular files that should be replaced. Start a fresh Codex session after changing installed skills so discovery reloads.
 
 ## Wire Up A Consumer Repo
 

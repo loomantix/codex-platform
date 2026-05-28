@@ -46,6 +46,10 @@ targets:
     destination: .codex/skills/deepgrill/SKILL.md
     substitutions: []
 
+  - source: .codex/skills/pr-grill/SKILL.md
+    destination: .codex/skills/pr-grill/SKILL.md
+    substitutions: []
+
   - source: .codex/skills/reviewit/SKILL.md
     destination: .codex/skills/reviewit/SKILL.md
     substitutions: []
@@ -67,12 +71,22 @@ targets:
     substitutions: []
     mode: '0755'
 
-  # `agent-loop-instructions.md` at the consumer's repo root is bootstrapped
-  # by the sister `claude-platform` sync (single canonical owner). Two
-  # `create_if_missing: true` writers for the same destination would race on
-  # fresh dual-source consumers, producing colliding PRs. The file is
-  # consumer-owned after bootstrap, so codex-side customizations belong in
-  # the consumer's checked-in copy rather than a sync-managed template here.
+  # /agent-loop expects `agent-loop-instructions.md` at the consumer's repo
+  # root. `create_if_missing: true` bootstraps the file from this template
+  # on first sync, then leaves it alone — consumer customizations made
+  # after the initial sync survive every subsequent run.
+  - source: .codex/skills/agent-loop/agent-loop-instructions.md.template
+    destination: agent-loop-instructions.md
+    substitutions: []
+    create_if_missing: true
+
+  # Consumer-owned Codex prompt. `create_if_missing: true` bootstraps it
+  # once; later upstream edits to `prompt.txt.template` no longer reach
+  # already-onboarded consumers.
+  - source: .codex/skills/agent-loop/prompt.txt.template
+    destination: .codex/skills/agent-loop/prompt.txt
+    substitutions: []
+    create_if_missing: true
 
   # Long role prompts are references, not always-loaded agent definitions.
   # Skills load them only when they need a specialized stance.
