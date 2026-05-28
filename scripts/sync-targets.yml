@@ -46,6 +46,10 @@ targets:
     destination: .codex/skills/deepgrill/SKILL.md
     substitutions: []
 
+  - source: .codex/skills/pr-grill/SKILL.md
+    destination: .codex/skills/pr-grill/SKILL.md
+    substitutions: []
+
   - source: .codex/skills/reviewit/SKILL.md
     destination: .codex/skills/reviewit/SKILL.md
     substitutions: []

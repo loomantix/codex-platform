@@ -26,6 +26,10 @@ Choose deep when the change touches auth, crypto, secret handling, schema/data s
 
 For docs/config-only changes, skip expensive review automation unless the user explicitly wants it. Source-code changes include common implementation extensions such as `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.rs`, `.go`, `.java`, `.cpp`, `.c`, `.h`, `.cs`, `.rb`, `.swift`, `.kt`, `.sh`, and `.bash`.
 
+## Cross-Engine Relay (optional)
+
+When you want a second engine's eyes on a PR another engine authored, run `pr-grill <pr-number>` on your own branch. It runs `grill`'s deep matrix against the PR diff, applies fixes, and pushes signed, labeled commits back to the PR head so the originating engine can re-review the new HEAD. The value is engine diversity — a different model catches design-level blind spots the authoring engine baked in. The hand-back is mandatory: `pr-grill` is one leg of a round trip, not a terminal review. It does not run `refactorpass`, push to a base branch, or force-push, and it refuses to run on `main`/`master`/`staging`.
+
 ## Review Principles
 
 - Keep Gemini and Copilot manual-only; `reviewit` is the orchestrator. It should not block every iteration on Copilot before acting on Gemini Flash: fire both, fix Gemini/local findings first, then poll and handle Copilot before starting the next iteration.
