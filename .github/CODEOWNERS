@@ -1,8 +1,8 @@
 # Every merge to codex-platform main requires explicit approval from a code
 # owner. Combined with branch protection's `require_code_owner_reviews: true`
-# and `required_approving_review_count: 1`, this means: no PR (including the
-# maintainer's own — admin can still bypass for solo work) reaches main
-# without a deliberate approval click.
+# and `required_approving_review_count: 1`, this means: no PR (including a
+# code owner's own — owners can cross-approve; admin can still bypass) reaches
+# main without a deliberate approval click.
 #
 # Rationale: codex-platform's `sync-v1` propagates to consumer repos that
 # track it. A merged-but-malicious commit here can flow into those
@@ -13,4 +13,4 @@
 #
 # CODEOWNERS syntax: https://docs.github.com/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
 
-*       @BaxterDevs
+*       @BaxterDevs @yeohgi @rowlandr71
