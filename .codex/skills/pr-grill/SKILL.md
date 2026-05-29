@@ -75,6 +75,11 @@ unavailable, run separate local passes and disclose the downgrade under `review
 depth` in the output. Keep lane findings separate until all lanes complete, then
 deduplicate by root cause.
 
+Invoking `pr-grill` is an explicit request to use independent subagents for the
+six deep review lanes whenever the active runtime exposes subagent/delegation
+tools. Do not require the user to separately say "use subagents" before spawning
+those lane reviewers.
+
 **Cross-engine emphasis.** You are reviewing another engine's work. Beyond
 line-level bugs, scrutinize the _design decisions_ the author made and did not
 question: chosen abstractions, latency/UX tradeoffs, removed or added special

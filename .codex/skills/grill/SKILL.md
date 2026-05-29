@@ -81,6 +81,10 @@ Deep mode must cover six independent lanes:
 
 Run these lanes as independently as the active runtime permits:
 
+- Invoking `grill deep` is an explicit request to use independent subagents for
+  these six lanes whenever the active runtime exposes subagent/delegation tools.
+  Do not require the user to separately say "use subagents" before spawning
+  those lane reviewers.
 - If subagents/delegation are available and permitted by the active Codex instructions, spawn independent reviewers with disjoint lane prompts. Tell each reviewer to inspect the diff independently, return only actionable findings with file/line evidence, and avoid relying on conclusions from other lanes.
 - If subagents are unavailable or not permitted, perform six separate local passes using the lane prompts above. Do not present that as equivalent to independent subagents.
 - If deep mode was requested but independent subagents could not be used, explicitly say so in the output under `review depth`.

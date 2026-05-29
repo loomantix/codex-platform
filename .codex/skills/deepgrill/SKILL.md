@@ -30,6 +30,11 @@ Run the full high-fidelity pre-push chain:
 
 Deep grill is not a single generalized review. If the active Codex runtime permits subagents/delegation, use independent reviewers for the six lanes. If subagents are unavailable or not permitted, run six separate local passes and disclose the downgrade in the final output.
 
+Invoking `deepgrill` is an explicit request to use independent subagents for the
+six deep review lanes whenever the active runtime exposes subagent/delegation
+tools. Do not require the user to separately say "use subagents" before spawning
+those lane reviewers.
+
 Every deep lane must use an adversarial stance: assume the diff contains
 defects, search for the highest-impact failure modes first, and require code,
 tests, or documented constraints to disprove each risk. Do not report guesses;
