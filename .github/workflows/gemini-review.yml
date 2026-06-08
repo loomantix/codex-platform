@@ -96,7 +96,7 @@ jobs:
           INPUT_TIER: ${{ github.event.inputs.tier || 'flash' }}
           # Model IDs — adjust here if Google renames models. Flash is
           # roughly 10–20× cheaper than Pro at similar code-review quality.
-          FLASH_MODEL: gemini-3-flash-preview  # pinned; gemini-flash-latest alias hot-swaps to 3.5-flash at ~3x cost (2026-06-04)
+          FLASH_MODEL: gemini-3-flash-preview # pinned; gemini-flash-latest alias hot-swaps to 3.5-flash at ~3x cost (2026-06-04)
           PRO_MODEL: gemini-2.5-pro
         run: |
           if [ "$INPUT_TIER" = "pro" ]; then
