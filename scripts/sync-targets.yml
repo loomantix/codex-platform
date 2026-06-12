@@ -58,6 +58,14 @@ targets:
     destination: .codex/skills/copilot-review/SKILL.md
     substitutions: []
 
+  - source: .codex/skills/ship-staging/SKILL.md
+    destination: .codex/skills/ship-staging/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/phone-install/SKILL.md
+    destination: .codex/skills/phone-install/SKILL.md
+    substitutions: []
+
   - source: .codex/skills/feature-dev/SKILL.md
     destination: .codex/skills/feature-dev/SKILL.md
     substitutions: []
