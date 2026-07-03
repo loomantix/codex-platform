@@ -1,12 +1,14 @@
 ---
 name: ship-staging
-description: Merge an approved GitHub pull request into a staging base branch and post a short Google Chat notification. Use when the user asks to ship, merge, or deploy a staging-targeted PR through the staging branch, especially with "ship-staging".
+description: Merge an approved GitHub pull request into a staging base branch, mark linked issues as on-staging, fast-forward the local staging reference checkout, and post a short Google Chat notification. Use when the user asks to ship, merge, or deploy a staging-targeted PR through the staging branch, especially with "ship-staging".
 ---
 
 # Ship Staging
 
-Merge one ready PR into `staging` and notify the configured development Google
-Chat space. This skill is intentionally narrow: it ships staging-base PRs only.
+Merge one ready PR into `staging`, mark its linked issues as shipped to
+staging, refresh the local staging reference checkout, and notify the configured
+development Google Chat space. This skill is intentionally narrow: it ships
+staging-base PRs only.
 
 ## Guardrails
 
@@ -91,7 +93,7 @@ Chat space. This skill is intentionally narrow: it ships staging-base PRs only.
    gh pr merge <pr> --merge --delete-branch
    ```
 
-   If the merge fails, do not post to chat.
+   If the merge fails, do not post to chat and do not label issues.
 
 8. Capture the merge commit:
 
@@ -99,30 +101,118 @@ Chat space. This skill is intentionally narrow: it ships staging-base PRs only.
    MERGE_SHA=$(gh pr view <pr> --json mergeCommit --jq '.mergeCommit.oid')
    ```
 
-9. Post to Google Chat:
+9. Mark linked open issues as on-staging. A closing keyword on a staging PR does
+   not close the issue until the work later reaches the default branch, so open
+   fixed issues need an explicit "done, awaiting promotion" label in the
+   meantime. Prefer GitHub's parsed closing references; fall back to explicit
+   `Closes #N`, `Fixes #N`, or `Resolves #N` text in the PR title/body.
 
    ```bash
-   RESPONSE=$(curl -sS -w "\n%{http_code}" \
-     -X POST \
-     -H "Content-Type: application/json" \
-     --data @/tmp/ship-staging-<pr>-payload.json \
-     "$GCHAT_WEBHOOK_URL")
-   HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-   BODY=$(echo "$RESPONSE" | sed '$d')
-   MSG_ID=$(echo "$BODY" | jq -r '.name // empty')
+   LINKED=$(gh pr view <pr> --json closingIssuesReferences \
+     --jq '.closingIssuesReferences[].number' 2>/dev/null)
+   if [[ -z "$LINKED" ]]; then
+     LINKED=$(gh pr view <pr> --json title,body \
+       --jq '[.title, .body] | join("\n")' \
+       | grep -ioE '(close[sd]?|fix(e[sd])?|resolve[sd]?)[: ]+#[0-9]+' \
+       | grep -oE '[0-9]+' | sort -u)
+   fi
+
+   ISSUES_MARKED=()
+   for n in $LINKED; do
+     state=$(gh issue view "$n" --json state --jq '.state' 2>/dev/null) || {
+       echo "warning: could not read issue #$n; leaving labels unchanged" >&2
+       continue
+     }
+     [[ "$state" == "OPEN" ]] || continue
+
+     mapfile -t issue_labels < <(
+       gh issue view "$n" --json labels --jq '.labels[].name' 2>/dev/null
+     )
+     edit_args=(--add-label "status: on-staging")
+     if printf '%s\n' "${issue_labels[@]}" | grep -Fxq "dev: agent"; then
+       edit_args+=(--remove-label "dev: agent")
+     fi
+
+     if gh issue edit "$n" "${edit_args[@]}"; then
+       ISSUES_MARKED+=("#$n")
+       echo "  marked #$n status: on-staging"
+     else
+       echo "warning: could not mark issue #$n status: on-staging" >&2
+     fi
+   done
    ```
 
-   Success requires `HTTP_CODE == 200` and a non-empty message id shaped like
-   `spaces/<space-id>/messages/<msg-id>`. If Google Chat returns `429`, wait
-   30 seconds and retry once. If posting still fails, report that the PR merged
-   but notification failed and leave the payload file in `/tmp` for manual
-   re-posting.
+   Keep this phase best-effort: labeling failures must not block the chat post
+   because the PR has already merged. Do not close the issues. Do not add
+   unrelated workflow labels. `status: on-staging` is the only label this skill
+   adds. Remove only the agent-loop admission label `dev: agent` when it is
+   present.
 
-10. On successful chat post, remove the temp payload file and report:
+10. Fast-forward the local staging reference checkout. This keeps new worktrees
+    and later staging/promotion diffs from starting from a stale local branch.
+    The checkout can be overridden with `SHIP_STAGING_MAIN_CHECKOUT`; otherwise
+    default to `$HOME/<repo-name>`, derived from the current repository's
+    `origin` URL.
+
+    ```bash
+    current_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+    origin_url=$(git -C "$current_root" remote get-url origin 2>/dev/null || true)
+    repo_name=$(basename "$origin_url")
+    repo_name="${repo_name%.git}"
+    MAIN_CHECKOUT="${SHIP_STAGING_MAIN_CHECKOUT:-}"
+    if [[ -z "$MAIN_CHECKOUT" && -n "$repo_name" && "$repo_name" != "." ]]; then
+      MAIN_CHECKOUT="$HOME/$repo_name"
+    fi
+    if [[ -z "$MAIN_CHECKOUT" ]]; then
+      MAIN_CHECKOUT="$current_root"
+    fi
+
+    if ! git -C "$MAIN_CHECKOUT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      echo "  (skip ff: $MAIN_CHECKOUT is not a git checkout)"
+    elif [[ "$(git -C "$MAIN_CHECKOUT" rev-parse --abbrev-ref HEAD)" != "staging" ]]; then
+      echo "  (skip ff: $MAIN_CHECKOUT is not on staging)"
+    elif [[ -n "$(git -C "$MAIN_CHECKOUT" status --porcelain)" ]]; then
+      echo "  (skip ff: $MAIN_CHECKOUT has uncommitted changes)"
+    else
+      git -C "$MAIN_CHECKOUT" fetch origin staging --quiet
+      if git -C "$MAIN_CHECKOUT" merge --ff-only origin/staging --quiet 2>/dev/null; then
+        echo "  fast-forwarded $MAIN_CHECKOUT to origin/staging"
+      else
+        echo "  (skip ff: $MAIN_CHECKOUT could not fast-forward)"
+      fi
+    fi
+    ```
+
+    Fast-forward only. Never use merge commits, rebase, checkout overwrite, or
+    `reset --hard` for this cleanup. Keep it best-effort like issue labeling:
+    report the result, but do not block the chat post.
+
+11. Post to Google Chat:
+
+    ```bash
+    RESPONSE=$(curl -sS -w "\n%{http_code}" \
+      -X POST \
+      -H "Content-Type: application/json" \
+      --data @/tmp/ship-staging-<pr>-payload.json \
+      "$GCHAT_WEBHOOK_URL")
+    HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+    BODY=$(echo "$RESPONSE" | sed '$d')
+    MSG_ID=$(echo "$BODY" | jq -r '.name // empty')
+    ```
+
+    Success requires `HTTP_CODE == 200` and a non-empty message id shaped like
+    `spaces/<space-id>/messages/<msg-id>`. If Google Chat returns `429`, wait
+    30 seconds and retry once. If posting still fails, report that the PR merged
+    but notification failed and leave the payload file in `/tmp` for manual
+    re-posting.
+
+12. On successful chat post, remove the temp payload file and report:
 
     ```text
     Shipped PR #<number> - <title>
     Merge commit: <short-sha>
+    Issues marked status: on-staging: <#N, #M | none>
+    Staging checkout: <fast-forwarded | skipped with reason>
     Chat notification: posted (message id <msg-id>)
     PR: <url>
     ```

@@ -50,6 +50,9 @@ Flags (all optional):
 Exclusion rules:
 
 - Label `status: blocked`
+- Label `status: on-staging` - fix merged to a staging/integration branch,
+  awaiting release/promotion (done, pending; an opt-in convention that is a
+  no-op in repos that do not apply it)
 - Body contains `Blocked by #N` or `Depends on #N` where #N is still open
 
 The `--agent` / `--priority` / `--area` flags work via standard label conventions (`dev: agent`, `priority: <level>`, `area: <name>`). Repos that don't use those labels will simply get an empty result for those filters — the script doesn't enforce a label scheme, it just queries one when asked.
