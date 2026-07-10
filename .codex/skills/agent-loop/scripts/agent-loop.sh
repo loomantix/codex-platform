@@ -24,7 +24,8 @@ Usage: agent-loop.sh [iterations] [options]
 Options:
   --iterations N       Process at most N issues (default: 10).
   --issues N,N,...     Restrict selection to this explicit issue allowlist.
-  --resume             Permit allowlisted/ready issues already assigned to @me.
+  --resume             Permit allowlisted issues already assigned only to @me
+                       (no effect on the ready queue, which is unassigned-only).
   --dry-run            Show selection, gates, paths, hooks, and publication only.
   -h, --help           Show this help.
 
@@ -217,13 +218,24 @@ git rev-parse --verify --quiet "refs/remotes/origin/$BASE_BRANCH" >/dev/null || 
     exit 1
 }
 
+# Resolve the current login once, up front. Doing it per-candidate inside an
+# unchecked command substitution meant a transient gh failure silently rendered a
+# resume-eligible issue "not mine" and skipped it.
+CURRENT_LOGIN="$(gh api user --jq .login)" || {
+    echo "could not determine current GitHub login (is gh authenticated?)" >&2
+    exit 1
+}
+[ -n "$CURRENT_LOGIN" ] || { echo "current GitHub login resolved empty" >&2; exit 1; }
+
 REPO_NAME="$(basename "$PROJECT_DIR")"
 RUN_TAG="$(date -u +%Y%m%d-%H%M%S)-$$"
 ACTIVE_WORKTREE=""
+RECOVERY_EMITTED=false
 PROCESSED_ISSUES=()
 
 recovery_message() {
     local reason="$1"
+    RECOVERY_EMITTED=true
     echo -e "${RED}✗${NC} $reason" >&2
     if [ -n "$ACTIVE_WORKTREE" ]; then
         echo "Worktree preserved: $ACTIVE_WORKTREE" >&2
@@ -237,7 +249,19 @@ on_interrupt() {
     recovery_message "Interrupted; no cleanup was attempted."
     exit 130
 }
+
+on_exit() {
+    local rc=$?
+    # Backstop for unguarded `set -e` aborts (e.g. a mid-pipeline git fetch/worktree
+    # failure) that would otherwise exit while an issue is claimed and live work sits
+    # in the worktree, with no recovery guidance. recovery_message sets the flag, so
+    # the explicit `recovery_message; exit 1` sites never double-report.
+    if [ "$rc" -ne 0 ] && [ "$RECOVERY_EMITTED" = false ] && [ -n "$ACTIVE_WORKTREE" ]; then
+        recovery_message "agent-loop aborted (exit $rc) with issue #${SELECTED_ID:-unknown} claimed."
+    fi
+}
 trap on_interrupt INT TERM
+trap on_exit EXIT
 
 already_processed() {
     local candidate="$1" seen
@@ -257,7 +281,7 @@ issue_is_selectable() {
     jq -e '.labels | any(.name == "dev: agent")' <<<"$json" >/dev/null || return 1
     local count mine
     count="$(jq '.assignees | length' <<<"$json")"
-    mine="$(jq -r '.assignees | any(.login == "'"$(gh api user --jq .login)"'")' <<<"$json")"
+    mine="$(jq -r '.assignees | any(.login == "'"$CURRENT_LOGIN"'")' <<<"$json")"
     if [ "$count" -eq 0 ]; then
         return 0
     fi
@@ -375,11 +399,20 @@ worktree_has_work() {
 
 run_bounded_hook() {
     local phase="$1" command="$2" timeout_seconds="$3" log_file="$4"
-    local blocks=$((LOG_MAX_KB * 2)) status=0
+    local max_bytes=$((LOG_MAX_KB * 1024)) status=0
     echo -e "${BLUE}▸${NC} $phase"
+    # Bound the captured log to its trailing LOG_MAX_KB with `tail -c`, NOT with a
+    # process-wide `ulimit -f`: that rlimit is inherited by the worker and every hook
+    # and would SIGXFSZ-kill (and truncate) any repo file they legitimately write
+    # (lockfiles, build artifacts, generated code). `tail` drains all input, so the
+    # hook is never signalled; keeping the tail preserves the failing output and any
+    # capacity/overload marker the retry logic greps for; PIPESTATUS[0] keeps the
+    # hook's real exit status.
     (
-        ulimit -f "$blocks"
-        timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc "$command"
+        set +e
+        timeout --signal=TERM --kill-after=15 "${timeout_seconds}s" bash -lc "$command" 2>&1 \
+            | tail -c "$max_bytes"
+        exit "${PIPESTATUS[0]}"
     ) >"$log_file" 2>&1 || status=$?
     if [ "$status" -ne 0 ]; then
         echo -e "${RED}✗${NC} $phase failed (exit $status); bounded tail follows:" >&2
@@ -403,7 +436,7 @@ worker_command() {
 }
 
 run_worker() {
-    local start_sha="$1" attempt=0 model="$WORKER_MODEL" status log command
+    local start_sha="$1" attempt=0 model="$WORKER_MODEL" status log command retry
     while [ "$attempt" -le "$WORKER_RETRIES" ]; do
         attempt=$((attempt + 1))
         log="$AGENT_LOOP_LOG_DIR/worker-attempt-$attempt.log"
@@ -454,7 +487,14 @@ run_validation() {
 
 inspect_publication_diff() {
     local file_count
-    git diff --check "origin/$BASE_BRANCH..HEAD"
+    # This function is called in an `||` context, so `set -e` is disabled in its
+    # body; check the gate explicitly or its non-zero exit (conflict markers left in
+    # a committed file, whitespace errors) is silently ignored and publication
+    # proceeds with a corrupt diff.
+    if ! git diff --check "origin/$BASE_BRANCH..HEAD"; then
+        echo "publication diff contains conflict markers or whitespace errors" >&2
+        return 1
+    fi
     file_count="$(git diff --name-only "origin/$BASE_BRANCH..HEAD" | wc -l | tr -d ' ')"
     [ "$file_count" -gt 0 ] || { echo "publication diff is empty" >&2; return 1; }
     echo "   Publication diff: $file_count file(s)"
@@ -465,10 +505,26 @@ publish_issue() {
     local number="$1" branch="$2" body_file pr_url
     git push --set-upstream origin "$branch"
     body_file="$AGENT_LOOP_LOG_DIR/pr-body.md"
-    # `%s` placeholders below are for printf, not shell expansion.
-    # shellcheck disable=SC2016
-    printf '## Summary\n\nLocal worker implementation passed isolated setup, local Claude deep review, local Codex review, and fresh-base validation.\n\n## Test plan\n\n- [x] configured local validation hook\n- [x] local Claude deep grill\n- [x] local Codex review against fresh `origin/%s`\n- [x] fresh-base integration and validation\n\nCloses #%s\n' \
-        "$BASE_BRANCH" "$number" > "$body_file"
+    # Report only the steps that actually ran. Claude review, Codex review, and
+    # fresh-base integration are unconditional; setup and validation are optional
+    # hooks (run_validation no-ops when unset), so claiming them unconditionally
+    # over-states verification exactly when a consumer hasn't wired them up.
+    {
+        echo "## Summary"
+        echo
+        echo "Local worker implementation passed local Claude deep review, local Codex"
+        echo "review against fresh \`origin/$BASE_BRANCH\`, and fresh-base integration."
+        echo
+        echo "## Test plan"
+        echo
+        if [ -n "$SETUP_HOOK" ]; then echo "- [x] isolated dependency bootstrap"; fi
+        echo "- [x] local Claude deep grill"
+        echo "- [x] local Codex review against fresh \`origin/$BASE_BRANCH\`"
+        echo "- [x] fresh-base integration and publication-diff inspection"
+        if [ -n "$VALIDATION_HOOK" ]; then echo "- [x] configured local validation hook"; fi
+        echo
+        echo "Closes #$number"
+    } > "$body_file"
     pr_url="$(gh pr create --base "$BASE_BRANCH" --head "$branch" \
         --title "agent-loop: resolve #$number" --body-file "$body_file")"
     echo -e "${GREEN}✓${NC} Published $pr_url"
@@ -524,7 +580,11 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         continue
     fi
 
-    claim_issue "$SELECTED_ID" || { ACTIVE_WORKTREE=""; exit 1; }
+    claim_issue "$SELECTED_ID" || {
+        echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID could not be claimed; skipping"
+        ACTIVE_WORKTREE=""
+        continue
+    }
     mkdir -p "$WORKTREE_ROOT" "$proposed_log_dir"
     AGENT_LOOP_LOG_DIR="$proposed_log_dir"
     git worktree add -b "$branch" "$ACTIVE_WORKTREE" "origin/$BASE_BRANCH"

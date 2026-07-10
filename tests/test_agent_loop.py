@@ -389,3 +389,58 @@ printf 'codex\n' >> "$EVENT_LOG"
     assert published == "fresh\n"
     events = (consumer[3] / "events.log").read_text(encoding="utf-8").splitlines()
     assert events[-1] == "validate"
+
+
+def test_large_worker_writes_survive_and_log_is_bounded(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Regression: the log-size bound must not constrain files the worker writes. A
+    # prior `ulimit -f` capped every file the hook wrote and SIGXFSZ-killed (and
+    # truncated) legitimate large writes. The worker below writes a repo file and
+    # streams stdout both larger than the cap; the file must land intact and the
+    # captured log must still be bounded to roughly log_max_kb.
+    cap_kb = 64
+    worker = (
+        "dd if=/dev/zero of=big.bin bs=1024 count=2048 2>/dev/null; "  # 2 MiB file > cap
+        "seq 1 200000; "  # ~1.3 MiB of stdout, far over the log cap
+        "git add big.bin; git commit -m 'fix: large artifact'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "11"],
+        issues=[_issue(11)],
+        config=_config(tmp_path, worker_hook=worker, log_max_kb=cap_kb),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    branch = _run_git(
+        "for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]
+    ).stdout.strip()
+    size = _run_git("cat-file", "-s", f"{branch}:big.bin", cwd=consumer[1]).stdout.strip()
+    assert int(size) == 2048 * 1024  # written in full, not truncated at the log cap
+    logs = list((tmp_path / "logs").glob("*/worker-attempt-1.log"))
+    assert logs, "worker log was not captured"
+    assert logs[0].stat().st_size <= cap_kb * 1024 + 8192  # bounded to ~log_max_kb
+
+
+def test_committed_conflict_markers_block_publication(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    # Regression: `inspect_publication_diff` runs in an `||` context (set -e off), so
+    # the `git diff --check` gate must check its status explicitly. A committed
+    # conflict marker in the publication diff must block the PR, not sail through.
+    worker = (
+        r"printf '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\n' > conflict.txt; "
+        "git add conflict.txt; git commit -m 'fix: conflicted'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "12"],
+        issues=[_issue(12)],
+        config=_config(tmp_path, worker_hook=worker),
+    )
+    assert result.returncode != 0
+    assert "conflict markers or whitespace errors" in result.stderr
+    branches = _run_git(
+        "for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]
+    ).stdout
+    assert "issue-12" not in branches  # never published
