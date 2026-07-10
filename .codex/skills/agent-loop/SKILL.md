@@ -1,80 +1,131 @@
 ---
 name: agent-loop
-description: Autonomous Codex relay loop on top of the issues skill. Use when the user wants Codex to claim ready GitHub issues, spawn non-interactive Codex exec sessions, push results to a collection branch, and open a summary PR.
+description: Autonomous issue implementation loop with strict issue allowlisting, one linked worktree per issue, configurable setup and local review hooks, fresh-base validation, and publication only after deterministic local Claude and Codex reviews. Use when Codex should implement a bounded GitHub issue queue without hosted AI reviewers.
 ---
 
-# /agent-loop
+# Agent Loop
 
-Run an autonomous Codex relay over the issue ready queue. Each iteration claims an issue, spawns a fresh `codex exec` session in an isolated worktree, lets it work, then pushes the result to a shared collection branch. After the loop, opens an `agent-loop: <branch>` PR with the closed-issues + commit-log summary.
+Run isolated issue workers and publish one reviewed pull request per issue. The
+wrapper owns selection, claiming, worktrees, local reviews, base integration,
+push, and PR creation. A worker only implements, validates, refactors, and
+commits locally.
 
 ## Usage
 
 ```bash
-.codex/skills/agent-loop/scripts/agent-loop.sh [iterations] [collection-branch] [--resume]
+.codex/skills/agent-loop/scripts/agent-loop.sh \
+  --issues 5105,5106 --iterations 2
+
+.codex/skills/agent-loop/scripts/agent-loop.sh \
+  --issues 5105,5106 --dry-run
 ```
 
-Defaults: 10 iterations, auto-generated collection branch (`agent-loop-<timestamp>-<rand>`), ready-queue-only.
+Options:
 
-| Args                      | Behavior                                                        |
-| ------------------------- | --------------------------------------------------------------- |
-| `5`                       | 5 iterations, auto-generated branch, ready-only                 |
-| `5 wasm-plugins`          | 5 iterations, named collection branch                           |
-| `5 wasm-plugins --resume` | also pick up issues already assigned to `@me` (orphan-recovery) |
-| `--help`                  | print the script header                                         |
+| Option             | Behavior                                                                                                                                                                      |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--issues N,N,...` | Restrict selection to exactly these issue numbers. Never fall through to unrelated ready work.                                                                                |
+| `--iterations N`   | Process at most `N` issues. A legacy numeric first argument remains accepted.                                                                                                 |
+| `--resume`         | Permit an eligible issue already assigned only to the current user.                                                                                                           |
+| `--dry-run`        | Show selections, dependency decisions, worktree/branch paths, hooks, and publication without claiming, fetching, creating worktrees, running hooks, pushing, or creating PRs. |
 
-## Prerequisites (per-repo, one-time)
+Omitting `--issues` retains the ready-queue behavior for backward compatibility.
+Use an allowlist for every scoped or retrospective-driven run.
 
-1. **`agent-loop-instructions.md` at the repo root** — repo-specific agent instructions (codebase conventions, build commands, test invocation, deployment quirks). The Codex prompt that points Codex here is **consumer-owned** in `.codex/skills/agent-loop/prompt.txt`, bootstrapped from `prompt.txt.template` on first sync (`create_if_missing: true`). The default content — `Read @agent-loop-instructions.md and follow the instructions. Your assigned issue is #{ISSUE_ID}. Run 'gh issue view {ISSUE_ID}' to see the full description, then complete it.` — is the value the script falls back to when `prompt.txt` is absent, empty, or unreadable. Edit `prompt.txt` to customize what Codex is told before reading your instructions file. If `agent-loop-instructions.md` itself is missing, the script exits before claiming work.
+Collection branches and worker-side publication are removed. Every selected
+issue gets a unique `agent-loop/issue-<N>-<run>` branch and linked worktree.
 
-   The instructions, prompt, and `.codex/skills/agent-loop/agent-loop.config` are bootstrapped via `create_if_missing: true` from templates in `.codex/skills/agent-loop/`. After first creation, customize them for your repo; subsequent syncs leave them alone. Set `base_branch` in the config when the integration branch differs from the GitHub default branch.
+## Required Consumer Files
 
-2. **`dev: agent` label + a triaged backlog** in the consumer's GitHub repo. The script picks **only** issues carrying `dev: agent` — without the label, an issue is invisible to the loop. This is a positive filter, not an exclusion: the operator must walk the backlog once and tag the agent-shaped subset, which keeps the loop from wandering into design / cross-repo / device-gated work. Create the label once per repo, then triage:
+- `agent-loop-instructions.md`: repository conventions and worker safety rules.
+- `.codex/skills/agent-loop/prompt.txt`: prompt containing `{ISSUE_ID}`. Require
+  a local commit and forbid push/PR creation.
+- `.codex/skills/agent-loop/agent-loop.config`: hook and base configuration.
+- `.codex/skills/issues/scripts/ready.py`: ready-queue provider.
 
-   ```bash
-   gh label create "dev: agent" --description "Suitable for autonomous AI agent completion" --color 8B5CF6
-   ```
+These consumer files are bootstrapped with `create_if_missing: true`; merge
+template changes manually into existing consumers.
 
-   Use the `backlog-refinement` skill to assess and prepare this queue. Its consumer-owned `RUBRIC.md` is the source of truth for readiness, make-ready transformations, and bail categories; do not bulk-tag issues from a looser checklist.
+## Config Interface
 
-3. **`gh`, `jq`, `xxd`, `python3`, `codex`** on `PATH`. The script hard-fails if any are missing.
-4. **`/issues` skill synced** — the script invokes `.codex/skills/issues/scripts/ready.py --json` to enumerate the queue. Without it the script exits at startup.
+The config is parsed as literal `key = value` lines and is never sourced.
+Unknown or duplicate keys fail closed. Hook values are shell commands executed
+with the issue worktree as the current directory.
 
-## Existing consumer migration
+| Key                                              | Purpose                                                                                                                                |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `base_branch`                                    | Integration branch; env `AGENT_LOOP_BASE_BRANCH` overrides it.                                                                         |
+| `setup_hook`                                     | Isolated bootstrap, such as `pnpm install --frozen-lockfile`. Never symlink mutable dependency directories.                            |
+| `validation_hook`                                | Bounded validation after the worker, after each review, and after fresh-base integration.                                              |
+| `claude_review_hook`                             | Required fresh local Claude deep review. It must fix confirmed findings, validate, commit fixes, and never push.                       |
+| `codex_review_hook`                              | Required local Codex review against `$AGENT_LOOP_REVIEW_BASE`. It must fix confirmed findings, validate, commit fixes, and never push. |
+| `worker_hook`                                    | Optional worker command override. Default is `codex exec`.                                                                             |
+| `worker_model`, `worker_fallback_model`          | Primary and capacity-fallback models for the default worker.                                                                           |
+| `worker_retries`                                 | Retries after clean capacity/timeout failures. Default `1`.                                                                            |
+| `worker_timeout_seconds`, `hook_timeout_seconds` | Bounded execution time.                                                                                                                |
+| `retry_on_timeout`, `retry_delay_seconds`        | Timeout retry policy.                                                                                                                  |
+| `dependency_gate`                                | `ready` (legacy) or `merged-to-base`.                                                                                                  |
+| `branch_prefix`, `worktree_root`, `log_root`     | Isolated path/ref controls.                                                                                                            |
+| `log_max_kb`, `output_max_lines`                 | Bound captured logs and displayed failure tails.                                                                                       |
 
-The instructions, prompt, and config are consumer-owned `create_if_missing`
-targets, so syncing does not update copies that already exist. Before using
-backlog RCA in an existing consumer, manually merge the **Continuous improvement
-— classify every bail** and **Operator note — align the base branch** sections
-from the current instruction template, add the bail reminder from the current
-prompt template, and set `base_branch` in `agent-loop.config` when the integration
-branch differs from the repository default.
+Hooks receive `AGENT_LOOP_ISSUE_ID`, `AGENT_LOOP_BASE_BRANCH`,
+`AGENT_LOOP_BRANCH`, `AGENT_LOOP_WORKTREE`, `AGENT_LOOP_LOG_DIR`, and
+`AGENT_LOOP_PROMPT`. Review hooks also receive `AGENT_LOOP_REVIEW_BASE` after a
+fresh fetch.
 
-## Behavior per iteration
+For a non-mutating consumer smoke test from an upstream development worktree,
+set `AGENT_LOOP_PROJECT_DIR=/path/to/consumer` and pass `--dry-run`. Do not use
+that override for a mutating run; execute the consumer's synced script instead.
 
-1. Sync the worktree with `origin/<collection-branch>` — fetches and fast-forwards. If the remote was force-pushed, cherry-picks the local commits onto the new tip (with a pre-reset SHA snapshot so a failed cherry-pick restores the original chain rather than leaving partial replay). Genuine merge conflicts fail loud; the eventual push surfaces persistent ones via the `PUSH_FAILURES` counter.
-2. Pick a work item: with `--resume`, prefer any open `dev: agent` issue already assigned to `@me`; otherwise the first dependency-free row from `ready.py --agent --json`. The `dev: agent` label is required on both paths — an empty queue means the backlog hasn't been triaged yet, not that there's no work to do.
-3. Claim by adding `@me` as assignee. Re-fetch immediately afterward — if there are >1 assignees, a parallel worker raced; release and try the next row.
-4. Spawn `codex exec --dangerously-bypass-approvals-and-sandbox --json -C <worktree> "$PROMPT"` and stream the JSON events through `jq` for display. The Codex PID is tracked so `Ctrl-C` interrupts the loop cleanly. **Prompt source:** the prompt is read from the consumer-owned `.codex/skills/agent-loop/prompt.txt` (bootstrapped from the upstream `prompt.txt.template` on first sync via `create_if_missing: true`); the script falls back to a baked-in literal when that file is absent, empty, or unreadable. The prompt must include `{ISSUE_ID}` so the wrapper can substitute the claimed issue number before spawning Codex.
-5. Snapshot newly-closed issues since the loop started (used for the final PR body) and push to the collection branch via `push_to_collection` — retry-and-merge with up to 3 attempts.
+Do not put secrets, credentials, PHI, customer identifiers, or user data in
+config values or hook output. The wrapper deliberately uses a generic PR body
+and never copies issue bodies, model logs, or findings into GitHub.
 
-## After the loop
+## Deterministic Phase Order
 
-If any commits accumulated on `origin/<collection-branch>` past `origin/<base-branch>`, opens an `agent-loop: <collection-branch>` PR (or attaches to an existing one) with:
+1. Select and dependency-gate an eligible issue.
+2. Claim it, detecting assignment races.
+3. Create a unique worktree and branch from `origin/<base>`.
+4. Run the isolated setup hook.
+5. Run the worker and require a clean local commit.
+6. Validate, then run the fresh Claude deep-review hook and validate again.
+7. Fetch the base, run the Codex-review hook against that fresh ref, and validate.
+8. Fetch and merge the base again, inspect a bounded diff, and revalidate.
+9. Confirm no worker/hook pushed the branch; only then push and open the PR.
 
-- summary line: `<N> iteration(s), <M> commit(s)`
-- `### Closed Issues` — newly-closed issues since loop start
-- `### Commit Log` — `git log --oneline <base>..<collection>`
+Do not invoke Gemini, Copilot, `reviewit`, or any GitHub-hosted AI reviewer.
 
-Then removes the worktree.
+## Dependency Gate
 
-## Worktree isolation
+With `dependency_gate = merged-to-base`, parse `Blocked by #N`,
+`Depends on #N`, `Blocked by PR #N`, and `Depends on PR #N`. A PR dependency
+passes only when GitHub reports it merged to the configured base and its merge
+commit is an ancestor of the current `origin/<base>`. An issue dependency passes
+only when one of its closing PRs meets the same condition. Closed issues alone
+do not pass.
 
-Each invocation creates `/tmp/agent-loop-<branch>-<pid>` so multiple runs don't collide. The `Ctrl-C` trap attempts a final push of any committed work and then removes the worktree — but if that final push fails (auth, branch protection, force-push race), the worktree is **preserved** at `/tmp/agent-loop-...` so a human can recover the local commits. The post-loop path also preserves the worktree on push failure, before skipping PR creation.
+## Failure and Recovery
 
-## Base branch
+On any non-zero worker exit, inspect whether the worktree is dirty or contains
+new commits. Preserve all changed or committed work and stop with recovery
+commands. Retry capacity/timeouts only when the worktree is unchanged. Review,
+setup, integration, and validation failures also preserve the worktree. Never
+reset, reuse, clean, or delete a dirty recovery worktree.
 
-Resolved in this order: `AGENT_LOOP_BASE_BRANCH`, `base_branch` in the consumer-owned `.codex/skills/agent-loop/agent-loop.config`, then the GitHub default branch from `origin/HEAD` (falling back to `main`). The collection branch and summary PR both use this base. Configure it explicitly for promotion-flow repositories whose integration branch differs from the default branch.
+Successful publication removes the clean linked worktree but retains the local
+branch. Interrupted runs preserve the active worktree.
 
-## Source of truth
+## Test Guidance
 
-This skill lives upstream at `.codex/skills/agent-loop/`. SKILL.md and `scripts/agent-loop.sh` are synced to consumer repos via the sync mechanism. Edits in a consumer will be overwritten on next sync — make changes upstream.
+Use focused commands and bounded output. For Vitest 4, target a test with:
+
+```bash
+pnpm --filter frontend test:run TestName
+```
+
+Do not insert `--` before `TestName`; that can run the full suite.
+
+## Source of Truth
+
+This directory is upstream-owned and synced to consumers. Change reusable
+mechanics here, not in a consumer's synced copy.
