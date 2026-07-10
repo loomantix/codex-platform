@@ -58,6 +58,12 @@ targets:
     destination: .codex/skills/copilot-review/SKILL.md
     substitutions: []
 
+  # Read-only GitHub Actions usage audit. Org-specific baselines live in a
+  # consumer-owned, non-synced `.codex/actions-usage-audit.local.md`.
+  - source: .codex/skills/actions-usage-audit/SKILL.md
+    destination: .codex/skills/actions-usage-audit/SKILL.md
+    substitutions: []
+
   - source: .codex/skills/ship-staging/SKILL.md
     destination: .codex/skills/ship-staging/SKILL.md
     substitutions: []
@@ -70,6 +76,10 @@ targets:
     destination: .codex/skills/feature-dev/SKILL.md
     substitutions: []
 
+  - source: .codex/skills/task-packet/SKILL.md
+    destination: .codex/skills/task-packet/SKILL.md
+    substitutions: []
+
   - source: .codex/skills/agent-loop/SKILL.md
     destination: .codex/skills/agent-loop/SKILL.md
     substitutions: []
@@ -78,6 +88,12 @@ targets:
     destination: .codex/skills/agent-loop/scripts/agent-loop.sh
     substitutions: []
     mode: '0755'
+
+  # Consumer-owned base-branch override for promotion-flow repositories.
+  - source: .codex/skills/agent-loop/agent-loop.config.template
+    destination: .codex/skills/agent-loop/agent-loop.config
+    substitutions: []
+    create_if_missing: true
 
   # /agent-loop expects `agent-loop-instructions.md` at the consumer's repo
   # root. `create_if_missing: true` bootstraps the file from this template
@@ -93,6 +109,33 @@ targets:
   # already-onboarded consumers.
   - source: .codex/skills/agent-loop/prompt.txt.template
     destination: .codex/skills/agent-loop/prompt.txt
+    substitutions: []
+    create_if_missing: true
+
+  # /backlog-refinement curates the dev: agent queue consumed by /agent-loop.
+  # RUBRIC.md and LEARNINGS.md are consumer-owned so each repo can evolve its
+  # own safety envelope and retain lessons from autonomous-run bails.
+  - source: .codex/skills/backlog-refinement/SKILL.md
+    destination: .codex/skills/backlog-refinement/SKILL.md
+    substitutions: []
+
+  - source: .codex/skills/backlog-refinement/scripts/candidates.py
+    destination: .codex/skills/backlog-refinement/scripts/candidates.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/backlog-refinement/scripts/bail-report.py
+    destination: .codex/skills/backlog-refinement/scripts/bail-report.py
+    substitutions: []
+    mode: '0755'
+
+  - source: .codex/skills/backlog-refinement/RUBRIC.md.template
+    destination: .codex/skills/backlog-refinement/RUBRIC.md
+    substitutions: []
+    create_if_missing: true
+
+  - source: .codex/skills/backlog-refinement/LEARNINGS.md.template
+    destination: .codex/skills/backlog-refinement/LEARNINGS.md
     substitutions: []
     create_if_missing: true
 

@@ -26,7 +26,7 @@ Defaults: 10 iterations, auto-generated collection branch (`agent-loop-<timestam
 
 1. **`agent-loop-instructions.md` at the repo root** — repo-specific agent instructions (codebase conventions, build commands, test invocation, deployment quirks). The Codex prompt that points Codex here is **consumer-owned** in `.codex/skills/agent-loop/prompt.txt`, bootstrapped from `prompt.txt.template` on first sync (`create_if_missing: true`). The default content — `Read @agent-loop-instructions.md and follow the instructions. Your assigned issue is #{ISSUE_ID}. Run 'gh issue view {ISSUE_ID}' to see the full description, then complete it.` — is the value the script falls back to when `prompt.txt` is absent, empty, or unreadable. Edit `prompt.txt` to customize what Codex is told before reading your instructions file. If `agent-loop-instructions.md` itself is missing, the script exits before claiming work.
 
-   Both files are bootstrapped via `create_if_missing: true` (their respective templates live in `.codex/skills/agent-loop/`). After first creation, customize them for your repo; subsequent syncs leave them alone.
+   The instructions, prompt, and `.codex/skills/agent-loop/agent-loop.config` are bootstrapped via `create_if_missing: true` from templates in `.codex/skills/agent-loop/`. After first creation, customize them for your repo; subsequent syncs leave them alone. Set `base_branch` in the config when the integration branch differs from the GitHub default branch.
 
 2. **`dev: agent` label + a triaged backlog** in the consumer's GitHub repo. The script picks **only** issues carrying `dev: agent` — without the label, an issue is invisible to the loop. This is a positive filter, not an exclusion: the operator must walk the backlog once and tag the agent-shaped subset, which keeps the loop from wandering into design / cross-repo / device-gated work. Create the label once per repo, then triage:
 
@@ -34,10 +34,20 @@ Defaults: 10 iterations, auto-generated collection branch (`agent-loop-<timestam
    gh label create "dev: agent" --description "Suitable for autonomous AI agent completion" --color 8B5CF6
    ```
 
-   The rubric for tagging (used by Loomantix consumers): bounded scope; verifiable success via tests / CI / deterministic check; no design / copy / strategy decisions; no platform credential gates (Play Console, App Store Connect, EAS); no physical device gate; no unresolved upstream blocker. If an issue fails any of those, leave it untagged.
+   Use the `backlog-refinement` skill to assess and prepare this queue. Its consumer-owned `RUBRIC.md` is the source of truth for readiness, make-ready transformations, and bail categories; do not bulk-tag issues from a looser checklist.
 
 3. **`gh`, `jq`, `xxd`, `python3`, `codex`** on `PATH`. The script hard-fails if any are missing.
 4. **`/issues` skill synced** — the script invokes `.codex/skills/issues/scripts/ready.py --json` to enumerate the queue. Without it the script exits at startup.
+
+## Existing consumer migration
+
+The instructions, prompt, and config are consumer-owned `create_if_missing`
+targets, so syncing does not update copies that already exist. Before using
+backlog RCA in an existing consumer, manually merge the **Continuous improvement
+— classify every bail** and **Operator note — align the base branch** sections
+from the current instruction template, add the bail reminder from the current
+prompt template, and set `base_branch` in `agent-loop.config` when the integration
+branch differs from the repository default.
 
 ## Behavior per iteration
 
@@ -49,11 +59,11 @@ Defaults: 10 iterations, auto-generated collection branch (`agent-loop-<timestam
 
 ## After the loop
 
-If any commits accumulated on `origin/<collection-branch>` past `origin/<default-branch>`, opens an `agent-loop: <collection-branch>` PR (or attaches to an existing one) with:
+If any commits accumulated on `origin/<collection-branch>` past `origin/<base-branch>`, opens an `agent-loop: <collection-branch>` PR (or attaches to an existing one) with:
 
 - summary line: `<N> iteration(s), <M> commit(s)`
 - `### Closed Issues` — newly-closed issues since loop start
-- `### Commit Log` — `git log --oneline <default>..<collection>`
+- `### Commit Log` — `git log --oneline <base>..<collection>`
 
 Then removes the worktree.
 
@@ -61,9 +71,9 @@ Then removes the worktree.
 
 Each invocation creates `/tmp/agent-loop-<branch>-<pid>` so multiple runs don't collide. The `Ctrl-C` trap attempts a final push of any committed work and then removes the worktree — but if that final push fails (auth, branch protection, force-push race), the worktree is **preserved** at `/tmp/agent-loop-...` so a human can recover the local commits. The post-loop path also preserves the worktree on push failure, before skipping PR creation.
 
-## Default branch
+## Base branch
 
-Auto-detected via `git symbolic-ref refs/remotes/origin/HEAD`. Works on consumers using `main`, `staging`, or any other default — no per-repo configuration.
+Resolved in this order: `AGENT_LOOP_BASE_BRANCH`, `base_branch` in the consumer-owned `.codex/skills/agent-loop/agent-loop.config`, then the GitHub default branch from `origin/HEAD` (falling back to `main`). The collection branch and summary PR both use this base. Configure it explicitly for promotion-flow repositories whose integration branch differs from the default branch.
 
 ## Source of truth
 

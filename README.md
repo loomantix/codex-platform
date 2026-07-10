@@ -13,15 +13,19 @@ Operational skills you can install globally or sync into any repo:
 | Skill                 | What it does                                                                                                                                                                                                                                                                     |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `refactorpass`        | Pre-push cleanup pass for local source changes; runs simplicity/DRY, correctness-preserving, and convention/API cleanup lanes.                                                                                                                                                   |
-| `grill`               | Pre-push adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs the full six-lane matrix.                                                                                                                                                |
+| `grill`               | Pre-push adversarial review. Lean mode runs code-reviewer + silent-failure-hunter lanes; deep mode runs six core lanes plus a conditional tenant-coupling pass.                                                                                                                  |
 | `deepgrill`           | Orchestrates refactorpass plus `grill deep`; uses independent reviewers when the active Codex runtime permits delegation.                                                                                                                                                        |
+| `pr-grill <pr>`       | Cross-engine deep review of an existing PR; fixes findings and pushes a labeled relay commit back to the PR head.                                                                                                                                                                |
 | `reviewit <pr>`       | Post-push AI review orchestrator for Gemini Flash + Copilot. Lean default caps at 2 iterations. `deep` arg bumps the cap to 4, early-exits when an iteration produces no `fix` resolutions, and ends with a final `deepgrill` so fresh subagents look at the PR's current state. |
 | `copilot-review <pr>` | Address GitHub Copilot review comments systematically.                                                                                                                                                                                                                           |
 | `feature-dev`         | Guided feature development: discovery, architecture, implementation, validation.                                                                                                                                                                                                 |
 | `issues`              | Thin workflow over `gh issue` with a dependency-aware ready queue. Parses `Blocked by #N` / `Depends on #N` from issue bodies.                                                                                                                                                   |
-| `agent-loop`          | Experimental Codex relay over the issue ready queue using `codex exec`.                                                                                                                                                                                                          |
+| `backlog-refinement`  | Curate and harden the autonomous queue: verify issues against the integration branch, rewrite agent-ready work, classify exclusions, and learn from loop bails.                                                                                                                  |
+| `agent-loop`          | Experimental Codex relay over the refined issue queue using `codex exec`, with a configurable integration/base branch.                                                                                                                                                           |
+| `actions-usage-audit` | Read-only GitHub Actions billing and workflow-usage analysis with month-over-month attribution.                                                                                                                                                                                  |
 | `task-packet`         | Execute a markdown Task Packet end-to-end.                                                                                                                                                                                                                                       |
 | `phone-install`       | Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB.                                                                                                                                                                        |
+| `ship-staging <pr>`   | Merge a ready staging PR, mark linked issues on-staging, refresh the local staging reference, and notify Google Chat.                                                                                                                                                            |
 
 ### Codex references (`.codex/references/`)
 
@@ -61,6 +65,11 @@ cd codex-platform
 Updates flow through `git pull` in this checkout. Existing symlinks pick up edits automatically.
 
 If a skill command is not found in a Codex session, run the dry-run check from this checkout. Use the normal installer for missing links; use `--force` only when the dry-run reports stale symlinks or regular files that should be replaced. Start a fresh Codex session after changing installed skills so discovery reloads.
+
+Consumer-owned `create_if_missing` targets are intentionally not upgraded by a
+sync. Existing `agent-loop` consumers adopting backlog RCA must manually merge
+the current bail-classification and base-branch guidance from the instruction
+and prompt templates; see the skill's **Existing consumer migration** section.
 
 ## Wire Up A Consumer Repo
 

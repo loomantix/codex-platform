@@ -15,7 +15,7 @@ round trip, not a terminal review.
 This is **not** `deepgrill`. `deepgrill` reviews local pre-push work, runs
 `refactorpass`, and refuses to push. `pr-grill` targets an existing PR diff,
 skips `refactorpass` (do not churn a PR under cross-review), and pushes signed
-fix commits back to the PR head branch. It reuses `grill`'s six-lane matrix by
+fix commits back to the PR head branch. It reuses `grill`'s deep matrix by
 reference — load the same role prompts, do not restate them here.
 
 ## Safety preconditions — verify before doing anything
@@ -60,7 +60,8 @@ is nothing for the matrix to find.
 
 ## Phase 1: Deep matrix on the PR diff
 
-Run `grill`'s **deep** six-lane matrix against `$RANGE`. Load the lane prompts
+Run `grill`'s **deep** matrix against `$RANGE`: the six core lanes plus the
+conditional tenant-coupling lane when customer-variable behavior is present. Load the lane prompts
 from `grill`'s role references — do not re-author them:
 
 - `.codex/references/roles/code-reviewer.md`
@@ -76,9 +77,9 @@ depth` in the output. Keep lane findings separate until all lanes complete, then
 deduplicate by root cause.
 
 Invoking `pr-grill` is an explicit request to use independent subagents for the
-six deep review lanes whenever the active runtime exposes subagent/delegation
-tools. Do not require the user to separately say "use subagents" before spawning
-those lane reviewers.
+six core review lanes, plus the conditional tenant-coupling lane when signaled,
+whenever the active runtime exposes subagent/delegation tools. Do not require the
+user to separately say "use subagents" before spawning those lane reviewers.
 
 **Cross-engine emphasis.** You are reviewing another engine's work. Beyond
 line-level bugs, scrutinize the _design decisions_ the author made and did not
@@ -131,7 +132,7 @@ know what changed and what to scrutinize:
 
 ```text
 pr-grill complete on PR #<pr-number> (cross-engine pass).
-review depth: <deep with independent subagents | deep local six-pass fallback>
+review depth: <deep with independent subagents | deep local multi-pass fallback>
 findings fixed:    <count + one-line each>
 design tradeoffs flagged: <any decisions the re-review should adjudicate — e.g. a fix
                            that simplified logic but changed a latency/UX property>

@@ -17,6 +17,8 @@ By default, review unstaged changes from `git diff`. The user may specify differ
 
 **Code Quality**: Evaluate significant issues like code duplication, missing critical error handling, accessibility problems, and inadequate test coverage.
 
+**Sensitive-Data Telemetry (default-deny)**: In repositories that handle PII, PHI, or other sensitive data (check `AGENTS.md`), treat any path that sends user-entered text, transcription/dictation text, LLM-generated content, or other free-form values to telemetry as a high-severity issue—even inside a nominally sanitized object. Field-name denylists are structurally leaky; only key allowlisting that drops unknowns is safe. Prefer opaque IDs, enums, counts, and durations. Flag raw object literals passed to loggers and direct error-tracker mutators when project instructions require a default-deny telemetry builder; defer to `AGENTS.md` for the enforced helper and lint rule.
+
 ## Confidence Scoring
 
 Rate each potential issue on a scale from 0-100:

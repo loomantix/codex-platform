@@ -23,12 +23,20 @@
 
 # >>> platform-synced paths <<<
 .codex/REVIEW_WORKFLOW.md
-.codex/agents/code-architect.md
-.codex/agents/code-explorer.md
-.codex/agents/code-reviewer.md
-.codex/settings.json
+.codex/references/roles/code-architect.md
+.codex/references/roles/code-explorer.md
+.codex/references/roles/code-reviewer.md
+.codex/references/roles/comment-analyzer.md
+.codex/references/roles/pr-test-analyzer.md
+.codex/references/roles/security-reviewer.md
+.codex/references/roles/silent-failure-hunter.md
+.codex/references/roles/type-design-analyzer.md
+.codex/skills/actions-usage-audit/SKILL.md
 .codex/skills/agent-loop/SKILL.md
 .codex/skills/agent-loop/scripts/agent-loop.sh
+.codex/skills/backlog-refinement/SKILL.md
+.codex/skills/backlog-refinement/scripts/bail-report.py
+.codex/skills/backlog-refinement/scripts/candidates.py
 .codex/skills/copilot-review/SKILL.md
 .codex/skills/deepgrill/SKILL.md
 .codex/skills/feature-dev/SKILL.md
@@ -36,6 +44,11 @@
 .codex/skills/issues/SKILL.md
 .codex/skills/issues/scripts/link.py
 .codex/skills/issues/scripts/ready.py
+.codex/skills/phone-install/SKILL.md
+.codex/skills/pr-grill/SKILL.md
 .codex/skills/refactorpass/SKILL.md
 .codex/skills/reviewit/SKILL.md
+.codex/skills/ship-staging/SKILL.md
+.codex/skills/task-packet/SKILL.md
+.github/workflows/dco.yml
 # <<< platform-synced paths >>>

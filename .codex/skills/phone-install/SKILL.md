@@ -1,7 +1,6 @@
 ---
 name: phone-install
-description: Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB. Use for phone sideload smoke tests, including consumer-specific build env overrides documented in the consumer repo.
-argument-hint: <adb-port> [--staging | --dev | --prod | --apk <path> | --no-launch | --no-pull]
+description: Build a release APK from the consumer repo and install it on a tethered Android device over wireless ADB. Use for phone sideload smoke tests, including consumer-specific build env overrides documented in the consumer repo. Accepts an ADB port and optional staging, development, production, APK-path, no-launch, or no-pull choices from the user's request.
 ---
 
 # /phone-install — release-build + wireless-install on Android
@@ -154,7 +153,7 @@ Concise summary back to the developer:
 
 ## Hard rules
 
-- **Never commit secret values to skill docs, memory, or logs.** Read build secrets (Clerk keys, API tokens) from the consumer's env files at invocation time only. Public test/sandbox keys committed in the consumer's repo are OK to reference literally.
+- **Never commit secret values to skill docs, memory, or logs.** Read build secrets (auth-provider keys, API tokens) from the consumer's env files at invocation time only. Public test/sandbox keys committed in the consumer's repo are OK to reference literally.
 - **Never push to remote during this flow.** Build-and-install only; local state only.
 - **Never modify `apps/mobile/android/`** manually — Expo regenerates it on every `expo prebuild --clean`. If the consumer's recipe pins Gradle (e.g. RN 0.83 has a 9.0 ceiling), respect that pin; don't bump it as a side-effect of a phone-install run.
 - **Never uninstall the app without asking.** Uninstall wipes local data; for products with offline / unsubmitted state, that data may be unrecoverable.
