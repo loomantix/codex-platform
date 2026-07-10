@@ -18,13 +18,15 @@ staging-base PRs only.
 - Never use `--admin`, `--squash`, `--rebase`, `--auto`, or `--no-verify`.
 - Stop on draft PRs, merge conflicts, blocked/dirty/unstable merge state,
   requested changes, failing CI, or required checks still running.
-- Resolve the Google Chat webhook at runtime from `GCHAT_DEV_WEBHOOK_URL`, or
-  from `GCHAT_DEV_WEBHOOK_FILE` when set, otherwise from
-  `$HOME/.config/codex-platform/gchat-dev-webhook.txt`.
+- Resolve the Google Chat webhook at runtime from `GCHAT_DEV_WEBHOOK_URL` or a
+  consumer-supplied path in `GCHAT_DEV_WEBHOOK_FILE`. The public skill does not
+  define a default secret location.
 - Treat the webhook URL as a secret: never print it, commit it, or include it in
   logs, PRs, issues, or summaries.
 - Do not merge if the webhook secret is unavailable; the notification is part of
   the staging ship contract.
+- Require the repository label `status: on-staging` before merging so linked
+  issues cannot silently remain in an actionable queue after the merge.
 
 ## Process
 
@@ -35,20 +37,52 @@ staging-base PRs only.
    ```bash
    if [[ -n "$GCHAT_DEV_WEBHOOK_URL" ]]; then
      GCHAT_WEBHOOK_URL="$GCHAT_DEV_WEBHOOK_URL"
-   else
-     WEBHOOK_FILE="${GCHAT_DEV_WEBHOOK_FILE:-$HOME/.config/codex-platform/gchat-dev-webhook.txt}"
-     if [[ ! -f "$WEBHOOK_FILE" ]]; then
-       echo "Missing webhook secret: set GCHAT_DEV_WEBHOOK_URL or create $WEBHOOK_FILE" >&2
+   elif [[ -n "$GCHAT_DEV_WEBHOOK_FILE" ]]; then
+     if [[ ! -f "$GCHAT_DEV_WEBHOOK_FILE" || ! -r "$GCHAT_DEV_WEBHOOK_FILE" ]]; then
+       echo "GCHAT_DEV_WEBHOOK_FILE must name a readable regular file" >&2
        exit 1
      fi
-     GCHAT_WEBHOOK_URL=$(<"$WEBHOOK_FILE")
+     GCHAT_WEBHOOK_URL=$(<"$GCHAT_DEV_WEBHOOK_FILE")
+   else
+     echo "Missing webhook secret: set GCHAT_DEV_WEBHOOK_URL or GCHAT_DEV_WEBHOOK_FILE" >&2
+     exit 1
+   fi
+   if [[ -z "${GCHAT_WEBHOOK_URL//[[:space:]]/}" ]]; then
+     echo "Webhook secret is empty" >&2
+     exit 1
    fi
    ```
 
-3. Fetch PR state:
+3. Resolve the current repository identity and fetch PR state. Both queries must
+   succeed before merging:
 
    ```bash
-   gh pr view <pr> --json number,title,state,isDraft,baseRefName,headRefName,headRefOid,mergeable,mergeStateStatus,url,body,author,reviewDecision,statusCheckRollup,labels
+   CURRENT_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner') || exit 1
+   if ! PR_JSON=$(gh pr view <pr> --json number,title,state,isDraft,baseRefName,headRefName,headRefOid,mergeable,mergeStateStatus,url,body,author,reviewDecision,statusCheckRollup,labels); then
+     echo "Could not resolve PR state; refusing to merge" >&2
+     exit 1
+   fi
+   checks_status=0
+   REQUIRED_CHECKS=$(gh pr checks <pr> --required --json bucket,name,state) || checks_status=$?
+   if [[ "$checks_status" -ne 0 && "$checks_status" -ne 8 ]]; then
+     echo "Could not resolve required checks; refusing to merge" >&2
+     exit 1
+   fi
+   # Hard gate, not just prose: exit code 8 means required checks are still
+   # PENDING (gh reports pending as non-zero but still emits the JSON), so the
+   # bucket rule below must be enforced in code. Refuse unless every required
+   # check is in the `pass` bucket. An empty set is vacuously true here, but a
+   # repo with no required checks returns exit 1 above and never reaches this.
+   if ! jq -e 'all(.[]; .bucket == "pass")' <<<"${REQUIRED_CHECKS:-[]}" >/dev/null; then
+     echo "Required checks are not all green (pending, failing, or skipped); refusing to merge" >&2
+     exit 1
+   fi
+   ON_STAGING_LABEL=$(gh label list --search "status: on-staging" --limit 100 \
+     --json name --jq 'any(.[]; .name == "status: on-staging")')
+   if [[ "$ON_STAGING_LABEL" != "true" ]]; then
+     echo "Required label status: on-staging is missing; create it before shipping" >&2
+     exit 1
+   fi
    ```
 
 4. Refuse without merging when any of these are true:
@@ -60,7 +94,7 @@ staging-base PRs only.
    - `reviewDecision == "CHANGES_REQUESTED"`
    - any status check conclusion is `FAILURE`, `CANCELLED`, `TIMED_OUT`, or
      `ACTION_REQUIRED`
-   - any required status check is `PENDING`, `IN_PROGRESS`, or `QUEUED`
+   - any item in `REQUIRED_CHECKS` has a `bucket` other than `pass`
 
    `mergeStateStatus` of `CLEAN` or `HAS_HOOKS` is acceptable when checks are
    otherwise green.
@@ -107,14 +141,56 @@ staging-base PRs only.
    meantime. Prefer GitHub's parsed closing references; fall back to explicit
    `Closes #N`, `Fixes #N`, or `Resolves #N` text in the PR title/body.
 
-   ```bash
-   LINKED=$(gh pr view <pr> --json closingIssuesReferences \
-     --jq '.closingIssuesReferences[].number' 2>/dev/null)
+   ````bash
+   ISSUE_DISCOVERY="complete"
+   if refs_file=$(mktemp /tmp/ship-staging-<pr>-refs.XXXXXX.json); then
+     if gh pr view <pr> --json closingIssuesReferences > "$refs_file"; then
+       if ! LINKED=$(jq -r --arg repo "$CURRENT_REPO" '
+         .closingIssuesReferences[]
+         | select((.repository.owner.login + "/" + .repository.name) == $repo)
+         | .number
+       ' "$refs_file"); then
+         echo "warning: could not parse closing references; trying PR text" >&2
+         ISSUE_DISCOVERY="degraded"
+         LINKED=""
+       fi
+     else
+       echo "warning: could not read parsed closing references; trying PR text" >&2
+       ISSUE_DISCOVERY="degraded"
+       LINKED=""
+     fi
+     rm -f "$refs_file"
+   else
+     echo "warning: could not create temporary file for closing references; trying PR text" >&2
+     ISSUE_DISCOVERY="degraded"
+     LINKED=""
+   fi
+
    if [[ -z "$LINKED" ]]; then
-     LINKED=$(gh pr view <pr> --json title,body \
-       --jq '[.title, .body] | join("\n")' \
-       | grep -ioE '(close[sd]?|fix(e[sd])?|resolve[sd]?)[: ]+#[0-9]+' \
-       | grep -oE '[0-9]+' | sort -u)
+     if PR_TITLE=$(gh pr view <pr> --json title --jq '.title') && \
+        PR_BODY=$(gh pr view <pr> --json body --jq '.body'); then
+       TITLE_LINKED=$(printf '%s\n' "$PR_TITLE" \
+         | grep -ioE '(^|[^[:alnum:]_])(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]:]+#[0-9]+' \
+         | grep -oE '[0-9]+' || true)
+       BODY_LINKED=$(printf '%s\n' "$PR_BODY" \
+         | awk '
+             /^[[:space:]]*(```|~~~)/ { fenced = !fenced; next }
+             fenced { next }
+             in_comment { if ($0 ~ /-->/) in_comment = 0; next }
+             /^[[:space:]]*<!--/ { if ($0 !~ /-->/) in_comment = 1; next }
+             /^[[:space:]]*>/ { next }
+             { print }
+           ' \
+         | grep -ioE '^[[:space:]]*(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]:]+#[0-9]+' \
+         | grep -oE '[0-9]+' || true)
+       LINKED=$(printf '%s\n%s\n' "$TITLE_LINKED" "$BODY_LINKED" \
+         | sed '/^$/d' \
+         | sort -u)
+     else
+       echo "warning: could not enumerate linked issues; none will be labeled" >&2
+       ISSUE_DISCOVERY="failed"
+       LINKED=""
+     fi
    fi
 
    ISSUES_MARKED=()
@@ -125,9 +201,11 @@ staging-base PRs only.
      }
      [[ "$state" == "OPEN" ]] || continue
 
-     mapfile -t issue_labels < <(
-       gh issue view "$n" --json labels --jq '.labels[].name' 2>/dev/null
-     )
+     if ! labels=$(gh issue view "$n" --json labels --jq '.labels[].name'); then
+       echo "warning: could not read labels for issue #$n; leaving labels unchanged" >&2
+       continue
+     fi
+     mapfile -t issue_labels <<< "$labels"
      edit_args=(--add-label "status: on-staging")
      if printf '%s\n' "${issue_labels[@]}" | grep -Fxq "dev: agent"; then
        edit_args+=(--remove-label "dev: agent")
@@ -140,7 +218,7 @@ staging-base PRs only.
        echo "warning: could not mark issue #$n status: on-staging" >&2
      fi
    done
-   ```
+   ````
 
    Keep this phase best-effort: labeling failures must not block the chat post
    because the PR has already merged. Do not close the issues. Do not add
@@ -152,7 +230,8 @@ staging-base PRs only.
     and later staging/promotion diffs from starting from a stale local branch.
     The checkout can be overridden with `SHIP_STAGING_MAIN_CHECKOUT`; otherwise
     default to `$HOME/<repo-name>`, derived from the current repository's
-    `origin` URL.
+    `origin` URL. Before fetching, verify that this checkout resolves to the
+    same `nameWithOwner` as the PR repository; a same-named fork is different.
 
     ```bash
     current_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
@@ -169,17 +248,20 @@ staging-base PRs only.
 
     if ! git -C "$MAIN_CHECKOUT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       echo "  (skip ff: $MAIN_CHECKOUT is not a git checkout)"
+    elif ! checkout_repo=$(cd "$MAIN_CHECKOUT" && gh repo view --json nameWithOwner --jq '.nameWithOwner'); then
+      echo "  (skip ff: could not resolve repository identity for $MAIN_CHECKOUT)"
+    elif [[ "$checkout_repo" != "$CURRENT_REPO" ]]; then
+      echo "  (skip ff: $MAIN_CHECKOUT belongs to a different repository)"
     elif [[ "$(git -C "$MAIN_CHECKOUT" rev-parse --abbrev-ref HEAD)" != "staging" ]]; then
       echo "  (skip ff: $MAIN_CHECKOUT is not on staging)"
     elif [[ -n "$(git -C "$MAIN_CHECKOUT" status --porcelain)" ]]; then
       echo "  (skip ff: $MAIN_CHECKOUT has uncommitted changes)"
+    elif ! git -C "$MAIN_CHECKOUT" fetch origin staging --quiet; then
+      echo "  (skip ff: $MAIN_CHECKOUT could not fetch origin/staging)"
+    elif git -C "$MAIN_CHECKOUT" merge --ff-only origin/staging --quiet 2>/dev/null; then
+      echo "  fast-forwarded $MAIN_CHECKOUT to origin/staging"
     else
-      git -C "$MAIN_CHECKOUT" fetch origin staging --quiet
-      if git -C "$MAIN_CHECKOUT" merge --ff-only origin/staging --quiet 2>/dev/null; then
-        echo "  fast-forwarded $MAIN_CHECKOUT to origin/staging"
-      else
-        echo "  (skip ff: $MAIN_CHECKOUT could not fast-forward)"
-      fi
+      echo "  (skip ff: $MAIN_CHECKOUT could not fast-forward)"
     fi
     ```
 
@@ -211,6 +293,7 @@ staging-base PRs only.
     ```text
     Shipped PR #<number> - <title>
     Merge commit: <short-sha>
+    Issue discovery: <complete | degraded | failed>
     Issues marked status: on-staging: <#N, #M | none>
     Staging checkout: <fast-forwarded | skipped with reason>
     Chat notification: posted (message id <msg-id>)

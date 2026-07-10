@@ -3,8 +3,8 @@
 #
 # Usage: agent-loop.sh [iterations] [collection-branch] [--resume]
 #
-# Default: 10 iterations, auto-generated collection branch off the repo's
-# default branch (main / staging / etc., auto-detected via origin/HEAD).
+# Default: 10 iterations, auto-generated collection branch off the configured
+# base branch (env/config override, then origin/HEAD, then main).
 #
 # Examples:
 #   agent-loop.sh 5                       # 5 iterations, auto-generated branch
@@ -47,6 +47,16 @@ MAX_ITERATIONS=10
 COLLECTION_BRANCH=""
 RESUME_IN_PROGRESS=false
 
+validate_branch_name() {
+    local value="$1"
+    local label="$2"
+    if ! [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || \
+       ! git check-ref-format --branch "$value" >/dev/null 2>&1; then
+        echo -e "${RED}✗${NC} $label is not a valid branch name: $value"
+        exit 1
+    fi
+}
+
 for arg in "$@"; do
     case "$arg" in
         --resume) RESUME_IN_PROGRESS=true ;;
@@ -74,14 +84,8 @@ if [ -z "$COLLECTION_BRANCH" ]; then
     COLLECTION_BRANCH="agent-loop-$(date +%Y%m%d-%H%M%S)-$(head -c2 /dev/urandom | xxd -p)"
 fi
 
-# Reject branch names with `..` segments or non-portable characters before
-# the name is used to build a /tmp path. The realistic-escape risk is bounded
-# by the trailing -$$ PID anchor, but cheap to defend properly.
-if ! [[ "$COLLECTION_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "$COLLECTION_BRANCH" == *..* ]]; then
-    echo -e "\033[0;31m✗\033[0m collection-branch contains illegal characters: $COLLECTION_BRANCH"
-    echo "   allowed: [A-Za-z0-9._/-], no '..' segments"
-    exit 1
-fi
+# Validate before the name is used to build a /tmp path or passed to git.
+validate_branch_name "$COLLECTION_BRANCH" "collection branch"
 
 # Walk up from the script's directory to the repo root rather than assuming
 # a fixed depth — the script lives under .codex/skills/agent-loop/scripts/
@@ -162,13 +166,51 @@ if [ ! -f "$PROJECT_DIR/agent-loop-instructions.md" ]; then
     exit 1
 fi
 
-DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
-DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+# Base branch the loop builds its collection branch on and targets the
+# end-of-run summary PR against. Precedence: AGENT_LOOP_BASE_BRANCH env var,
+# then `base_branch = <name>` in the consumer-owned agent-loop.config, then
+# the repo's default branch (origin/HEAD). Set base_branch when your
+# integration branch differs from the default branch (e.g. a staging->main
+# promotion flow) so the collection branch + summary PR don't target the
+# wrong base and drown the summary diff in unpromoted backlog.
+AGENT_LOOP_CONFIG="$PROJECT_DIR/.codex/skills/agent-loop/agent-loop.config"
+CONFIG_BASE_BRANCH=""
+if [ -e "$AGENT_LOOP_CONFIG" ]; then
+    if [ ! -f "$AGENT_LOOP_CONFIG" ] || [ ! -r "$AGENT_LOOP_CONFIG" ]; then
+        echo -e "${RED}✗${NC} agent-loop config is not a readable regular file: $AGENT_LOOP_CONFIG"
+        exit 1
+    fi
+    if ! CONFIG_BASE_BRANCH=$(awk '
+        /^[[:space:]]*base_branch[[:space:]]*=/ {
+            count++
+            value = $0
+            sub(/^[[:space:]]*base_branch[[:space:]]*=[[:space:]]*/, "", value)
+            sub(/^[[:space:]]*/, "", value)
+            sub(/[[:space:]]*$/, "", value)
+            if (value == "") exit 2
+            next
+        }
+        /^[[:space:]]*base_branch([[:space:]]|$)/ { exit 3 }
+        END {
+            if (count > 1) exit 4
+            if (count == 1) print value
+        }
+    ' "$AGENT_LOOP_CONFIG"); then
+        echo -e "${RED}✗${NC} invalid base_branch configuration in $AGENT_LOOP_CONFIG"
+        exit 1
+    fi
+fi
+BASE_BRANCH="${AGENT_LOOP_BASE_BRANCH:-$CONFIG_BASE_BRANCH}"
+if [ -z "$BASE_BRANCH" ]; then
+    BASE_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+fi
+BASE_BRANCH="${BASE_BRANCH:-main}"
+validate_branch_name "$BASE_BRANCH" "base branch"
 
 REPO_SLUG=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || echo "unknown/unknown")
 
 echo -e "${CYAN}→${NC} Starting /agent-loop in $PROJECT_DIR ($REPO_SLUG)"
-echo "   Collection branch: $COLLECTION_BRANCH (off origin/$DEFAULT_BRANCH)"
+echo "   Collection branch: $COLLECTION_BRANCH (off origin/$BASE_BRANCH)"
 echo "   Max iterations: $MAX_ITERATIONS"
 echo "   Worktree: $WORKTREE_DIR"
 echo "   Resume orphaned: $RESUME_IN_PROGRESS"
@@ -185,12 +227,18 @@ git worktree prune 2>/dev/null || true
 echo -e "${DIM}› Fetching latest from origin...${NC}"
 git fetch origin --quiet
 
+if ! git rev-parse --verify --quiet "refs/remotes/origin/$BASE_BRANCH" >/dev/null; then
+    echo -e "${RED}✗${NC} configured base branch does not exist on origin: $BASE_BRANCH"
+    echo "   Check AGENT_LOOP_BASE_BRANCH or $AGENT_LOOP_CONFIG."
+    exit 1
+fi
+
 if git rev-parse "origin/$COLLECTION_BRANCH" &>/dev/null; then
     BASE="origin/$COLLECTION_BRANCH"
     echo -e "${GREEN}✓${NC} Joining existing collection branch: $COLLECTION_BRANCH"
 else
-    BASE="origin/$DEFAULT_BRANCH"
-    echo -e "${GREEN}✓${NC} Creating new collection branch from $DEFAULT_BRANCH"
+    BASE="origin/$BASE_BRANCH"
+    echo -e "${GREEN}✓${NC} Creating new collection branch from $BASE_BRANCH"
 fi
 
 if [ -d "$WORKTREE_DIR" ]; then
@@ -388,15 +436,12 @@ while [ $ITERATION -lt $MAX_ITERATIONS ]; do
     if git rev-parse "origin/$COLLECTION_BRANCH" &>/dev/null; then
         LOCAL_HEAD=$(git rev-parse HEAD)
         REMOTE_HEAD=$(git rev-parse "origin/$COLLECTION_BRANCH")
-        MERGE_BASE=$(git merge-base HEAD "origin/$COLLECTION_BRANCH" 2>/dev/null || echo "none")
 
-        if [ "$MERGE_BASE" = "none" ] || ! git merge-base --is-ancestor "$MERGE_BASE" "$REMOTE_HEAD" 2>/dev/null; then
-            echo -e "${YELLOW}› Remote branch was force-pushed — resetting to remote tip...${NC}"
-            git reset --hard "origin/$COLLECTION_BRANCH" --quiet 2>/dev/null || true
-        elif [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
-            if ! git merge "origin/$COLLECTION_BRANCH" --no-edit --quiet 2>/dev/null; then
-                git merge --abort 2>/dev/null || true
-                echo -e "${YELLOW}⚠${NC} Pre-iteration merge conflict on origin/$COLLECTION_BRANCH — proceeding on stale base; the eventual push will surface this." >&2
+        if [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
+            echo -e "${YELLOW}› Collection branch moved — preserving local commits while syncing...${NC}"
+            if ! push_to_collection; then
+                echo -e "${RED}✗${NC} Could not safely sync origin/$COLLECTION_BRANCH; aborting with worktree preserved" >&2
+                exit 1
             fi
         fi
     fi
@@ -628,7 +673,7 @@ if ! push_to_collection; then
     echo -e "${YELLOW}⚠${NC} Final push failed — skipping PR creation. Worktree preserved at $WORKTREE_DIR for manual recovery."
 fi
 
-COMMIT_COUNT=$(git rev-list --count "origin/$DEFAULT_BRANCH..origin/$COLLECTION_BRANCH" 2>/dev/null || echo "0")
+COMMIT_COUNT=$(git rev-list --count "origin/$BASE_BRANCH..origin/$COLLECTION_BRANCH" 2>/dev/null || echo "0")
 
 if [ "$FINAL_PUSH_OK" = true ] && [ "$COMMIT_COUNT" -gt 0 ]; then
     echo -e "${BLUE}▸${NC} $COMMIT_COUNT commit(s) on $COLLECTION_BRANCH — creating PR"
@@ -644,7 +689,7 @@ if [ "$FINAL_PUSH_OK" = true ] && [ "$COMMIT_COUNT" -gt 0 ]; then
     fi
 
     PR_BODY+="\n### Commit Log\n\n\`\`\`\n"
-    PR_BODY+=$(git log --oneline "origin/$DEFAULT_BRANCH..origin/$COLLECTION_BRANCH" 2>/dev/null || echo "(no commits)")
+    PR_BODY+=$(git log --oneline "origin/$BASE_BRANCH..origin/$COLLECTION_BRANCH" 2>/dev/null || echo "(no commits)")
     PR_BODY+="\n\`\`\`\n"
 
     EXISTING_PR=$(gh pr list --head "$COLLECTION_BRANCH" --json number --jq '.[0].number' 2>/dev/null || echo "")
@@ -657,7 +702,7 @@ if [ "$FINAL_PUSH_OK" = true ] && [ "$COMMIT_COUNT" -gt 0 ]; then
         PR_BODY_FILE=$(mktemp /tmp/agent-loop-pr-body.XXXXXX.md)
         printf '%b' "$PR_BODY" > "$PR_BODY_FILE"
         PR_URL=$(gh pr create \
-            --base "$DEFAULT_BRANCH" \
+            --base "$BASE_BRANCH" \
             --head "$COLLECTION_BRANCH" \
             --title "agent-loop: $COLLECTION_BRANCH" \
             --body-file "$PR_BODY_FILE" \

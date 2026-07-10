@@ -36,6 +36,7 @@ TODO: customize for this repo's conventions. Common conventions to keep or remov
 - **Annotated tags** if used: `git tag -a -m "..."`.
 - **PR base branch**: TODO (often `main`; some repos use `staging` or another).
 - **Heredocs in `gh` commands cause permission prompts** — write multiline bodies to a temp file first, then `gh pr create --body-file <path>`.
+- Avoid stashing during an active merge. Use `git show <ref>:<path>` to inspect another revision, preserve unrelated edits, and never discard working-tree changes without explicit confirmation.
 
 ## What NOT to edit
 
@@ -57,21 +58,41 @@ If your issue requires changing any of these, **stop and post a comment on the i
 
 ## Out-of-scope guardrails
 
-If you discover any of these mid-issue, **stop, comment on the issue with what you found, and exit without a PR**:
+If you discover any of these mid-issue, **stop, comment on the issue, classify the bail (see _§ Continuous improvement — classify every bail_ below), and exit without a PR**:
 
-- **Issue title starts with `Epic:`, contains `extractable as @`, or otherwise reads as cross-repo coordination work.** Epics are not bounded implementation tasks — they're tracking issues. Past agent-loop runs have wasted budget reading an entire epic body before bailing; bail at the title.
+- **Issue title starts with `Epic:` or otherwise reads as cross-repo coordination work.** Epics are tracking issues, not bounded implementation tasks; bail after reading the title.
 - The issue requires touching another repository (cross-repo coordination).
 - The issue is "submit a form to a regulator," "procure a certificate," "rotate a production secret," or any other action whose deliverable is a signed PDF, an email to a government mailbox, or a Vault/secret-store mutation — not code. A short comment back is enough.
 - The issue has open policy questions — re-read the body; if it asks "should we A or B?" or "decision needed," that's a human call.
 - The issue requires deleting org-level secrets, modifying branch protection, or installing GitHub Apps — these have organization-wide blast radius and need human verification.
 - Acceptance criteria can't be satisfied without changing the synced surfaces listed above.
-- **Your branch's diff vs current `origin/main` shows large DELETIONS in files you didn't author.** This is the stacked-PR-revert trap: a sibling iteration's PR merged to `main` mid-loop, and your branch's baseline now predates it, so opening this PR would _revert_ the sibling's work. Comment on the issue noting the sibling-merge race and exit — the human can re-run after the dust settles.
+- **Your branch's diff vs the current integration branch shows large DELETIONS in files you didn't author.** This is the stacked-PR-revert trap: a sibling iteration's PR merged mid-loop, and your branch's baseline now predates it, so opening this PR would _revert_ the sibling's work. Comment on the issue noting the sibling-merge race and exit — the human can re-run after the dust settles.
+
+## Continuous improvement — classify every bail
+
+This loop pairs with the **`/backlog-refinement`** skill to form a learning system: refinement curates the `dev: agent` queue you pull from, and **every bail teaches the system where the backlog or the loop fell short.** The shared rubric is `.codex/skills/backlog-refinement/RUBRIC.md` (§3 lists the `agent-bail:` taxonomy; §4 is this protocol). So when you exit _without a PR_, do not just comment and leave — before exiting:
+
+1. **Read `RUBRIC.md` §3 and pick the dominant `agent-bail:` category** for why you're bailing (one label; mention secondary reasons in your comment). Use the category's current bucket and preventability classification from the consumer-owned rubric; do not rely on a copied taxonomy in this file.
+2. **Relabel:** `gh issue edit <N> --add-label "agent-bail: <category>" --add-label "agent: refined" --remove-label "dev: agent"`. (Removing `dev: agent` stops the loop re-picking it; the removal is itself a high-signal RCA trigger — it means refinement passed something the loop couldn't finish.)
+3. **End your issue comment with the RCA stub** so the post-run `/backlog-refinement rca` pass can aggregate it. Answer the two questions honestly — _what could have made automation succeed here_, and if nothing, _what shape should refinement learn to exclude_:
+
+   ```
+   <!-- agent-loop-rca
+   category: <agent-bail category>
+   bucket: A|B
+   preventable: yes|no
+   what-could-differ: <one line — the answer, or "nothing: inherent">
+   rubric-impact: <which RUBRIC §2 transformation or §3 disqualifier this sharpens>
+   -->
+   ```
+
+If `/backlog-refinement` isn't installed in this repo, still comment and exit; skip the rubric lookup and relabel rather than inventing a category.
 
 ## Pre-push checks
 
-**Don't try to invoke `/refactorpass`, `/grill`, `/deepgrill`, or `/reviewit` from this script.** Slash-command-style skill activation is not reliable inside one-shot non-interactive workers, and the inner Codex may treat "if these skills are available" as optional. The loop wrapper is being updated upstream to invoke them deterministically; until that lands, leave the pre-push refactor pass and the post-push reviewer chain to the human operator.
+**Don't try to invoke `refactorpass`, `grill`, `deepgrill`, or `reviewit` from this script.** Skills don't reliably auto-activate in a one-shot non-interactive worker when they are merely mentioned as optional. Until the loop invokes them deterministically, leave the pre-push refactor pass and post-push reviewer chain to the human operator.
 
-Do **shell-level** checks instead — they actually work in non-interactive mode. Substitute the actual commands from your "Build / test" section above:
+Do **shell-level** checks instead — they work in non-interactive mode. Substitute the actual commands from your "Build / test" section above:
 
 ```bash
 <typecheck command>           # whole repo, fast
@@ -79,21 +100,21 @@ Do **shell-level** checks instead — they actually work in non-interactive mode
 <lint command>                # auto-fix what's fixable; verify nothing complains after
 ```
 
-A green diff against typecheck + targeted test + lint is a much stronger ship-readiness signal than a skipped-because-not-available skill.
+A green diff against typecheck + targeted test + lint is a much stronger ship-readiness signal than a skill that never activated.
 
 ## Pre-PR sanity check (CRITICAL)
 
 Before opening the PR, run this and read it:
 
 ```bash
-git diff --stat origin/main..HEAD | tail -3
-git log --oneline origin/main..HEAD
+git diff --stat origin/<integration-branch>..HEAD | tail -3
+git log --oneline origin/<integration-branch>..HEAD
 ```
 
 Two failure modes to catch here:
 
 1. **Reverting another iteration's work.** If the diffstat shows DELETIONS in files you didn't touch (the bullet in the guardrail section above), your branch's baseline predates a sibling iteration's merge. Stop.
-2. **Cross-cutting scope from prior iterations.** If `git log` shows commits you didn't author (typically merges from the agent-loop collection branch), your PR's diff vs `main` will include their work. Don't pretend it's your issue's scope — call it out in the PR body's "Also in this PR" section (template below). A `test(mobile):` PR that quietly ships a backend production change is a review-trust violation.
+2. **Cross-cutting scope from prior iterations.** If `git log` shows commits you didn't author (typically merges from the agent-loop collection branch), your PR's diff vs the configured integration branch will include their work. Don't pretend it's your issue's scope — call it out in the PR body's "Also in this PR" section (template below). A narrowly titled PR that quietly ships an unrelated production change is a review-trust violation.
 
 ## PR shape
 
@@ -104,7 +125,7 @@ Two failure modes to catch here:
 
 ## Also in this PR (cross-cutting scope)
 
-<Only include this section if `git log origin/main..HEAD` shows commits
+<Only include this section if `git log origin/<integration-branch>..HEAD` shows commits
 you didn't author — i.e., your branch carried prior-iteration content
 forward via the agent-loop collection branch. List each cross-cutting
 change with the issue it closes, so reviewers see the full scope.>
@@ -133,3 +154,7 @@ Closes #<N>
 **PR title honesty.** The title must match the BIGGEST scope item in the diff, not just your assigned issue. If the diff carries an unrelated change from a prior iteration alongside your issue's work, prefer a neutral title (`chore: agent-loop iteration N — <areas>`) or a multi-area conventional commit (`feat(backend,mobile): …`). A title that lies about scope wastes reviewer time and almost always triggers AI-reviewer findings about "PR description focuses on X but introduces Y."
 
 **Do not run `/reviewit` yourself.** The human will trigger `/reviewit <pr-number>` on whichever PR they want reviewed (usually the summary PR for a bundled run, not the per-issue PRs).
+
+## Operator note — align the base branch
+
+Set `base_branch` in `.codex/skills/agent-loop/agent-loop.config` to the same integration branch named in this file. The collection branch, pre-PR sanity checks, per-issue PRs, and end-of-run summary PR must all compare against the same branch.
