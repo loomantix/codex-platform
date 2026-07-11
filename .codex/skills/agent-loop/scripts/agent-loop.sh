@@ -196,6 +196,12 @@ case "$DEPENDENCY_GATE" in ready|merged-to-base) ;; *) echo "dependency_gate mus
 for cmd in git gh jq python3 timeout; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "required command not found: $cmd" >&2; exit 1; }
 done
+if [ -z "$WORKER_HOOK" ]; then
+    command -v codex >/dev/null 2>&1 || {
+        echo "required command not found for default worker: codex" >&2
+        exit 1
+    }
+fi
 [ -x "$ISSUES_READY" ] || { echo "issues ready.py not found or not executable: $ISSUES_READY" >&2; exit 1; }
 [ -f "$INSTRUCTIONS_FILE" ] || { echo "agent-loop-instructions.md not found at repository root" >&2; exit 1; }
 [ -n "$CLAUDE_REVIEW_HOOK" ] || { echo "claude_review_hook must be configured before running agent-loop" >&2; exit 1; }
@@ -587,7 +593,10 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
     }
     mkdir -p "$WORKTREE_ROOT" "$proposed_log_dir"
     AGENT_LOOP_LOG_DIR="$proposed_log_dir"
-    git worktree add -b "$branch" "$ACTIVE_WORKTREE" "origin/$BASE_BRANCH"
+    # Never let the issue branch inherit origin/<base> as its upstream. With
+    # push.default=upstream, a bare `git push` from a worker/reviewer would
+    # otherwise target the integration branch and bypass local review.
+    git worktree add --no-track -b "$branch" "$ACTIVE_WORKTREE" "origin/$BASE_BRANCH"
     cd "$ACTIVE_WORKTREE"
 
     export AGENT_LOOP_ISSUE_ID="$SELECTED_ID"

@@ -444,3 +444,48 @@ def test_committed_conflict_markers_block_publication(
         "for-each-ref", "--format=%(refname:short)", "refs/heads/agent-loop", cwd=consumer[1]
     ).stdout
     assert "issue-12" not in branches  # never published
+
+
+def test_issue_branch_has_no_upstream_during_worker(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    _run_git("config", "push.default", "upstream", cwd=consumer[0])
+    worker = (
+        "if git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' "
+        ">/dev/null 2>&1; then exit 41; fi; "
+        "printf done > result.txt; git add result.txt; "
+        "git commit -m 'fix: untracked issue branch'"
+    )
+    result = _run(
+        consumer,
+        ["--issues", "13"],
+        issues=[_issue(13)],
+        config=_config(tmp_path, worker_hook=worker),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_missing_default_codex_fails_before_claim(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    repo, _, bin_dir, state_dir = consumer
+    no_codex_bin = tmp_path / "no-codex-bin"
+    no_codex_bin.mkdir()
+    for command in ("bash", "git", "jq", "python3", "timeout"):
+        executable = shutil.which(command)
+        assert executable is not None
+        (no_codex_bin / command).symlink_to(executable)
+    (no_codex_bin / "gh").symlink_to(bin_dir / "gh")
+
+    result = _run(
+        consumer,
+        ["--issues", "14"],
+        issues=[_issue(14)],
+        config=_config(tmp_path, worker_hook=""),
+        extra_env={"PATH": str(no_codex_bin)},
+    )
+    assert result.returncode != 0
+    assert "required command not found for default worker: codex" in result.stderr
+    gh_log = state_dir / "gh.log"
+    assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
+    assert not (tmp_path / "worktrees").exists()
