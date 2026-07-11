@@ -2,6 +2,9 @@
 # Deterministic, per-issue agent loop with local reviews before publication.
 
 set -euo pipefail
+# Worktrees and persistent worker/reviewer logs can contain sensitive source or
+# test output. Default every path this wrapper creates to owner-only access.
+umask 077
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -304,10 +307,20 @@ select_next_issue() {
     SELECTED_ASSIGNED=false
     local json number
     if [ -n "$ISSUE_ALLOWLIST" ]; then
-        local candidates
+        local candidates allowlist_ready_json
+        # An allowlist is a scope ceiling, not an eligibility bypass. Resolve the
+        # same hard excludes, open blockers, and addressed-PR checks as the normal
+        # ready queue, while retaining assigned-but-ready rows for --resume.
+        allowlist_ready_json="$("$ISSUES_READY" --agent --limit 1000 --json)" || return 2
         IFS=',' read -r -a candidates <<< "$ISSUE_ALLOWLIST"
         for number in "${candidates[@]}"; do
             already_processed "$number" && continue
+            if ! jq -e --argjson number "$number" 'any(.number == $number)' \
+                <<< "$allowlist_ready_json" >/dev/null; then
+                echo -e "${DIM}○${NC} Allowlisted issue #$number is not ready." >&2
+                PROCESSED_ISSUES+=("$number")
+                continue
+            fi
             json="$(issue_json "$number")" || return 2
             if ! issue_is_selectable "$number" "$json"; then
                 echo -e "${DIM}○${NC} Allowlisted issue #$number is not open, agent-labeled, or safely assignable." >&2
@@ -384,17 +397,30 @@ check_dependencies() {
 }
 
 claim_issue() {
-    local number="$1" count
-    if [ "$SELECTED_ASSIGNED" = true ]; then
-        echo -e "${YELLOW}›${NC} Resuming issue #$number"
-        return 0
+    local number="$1" claim_json login added=false
+    if [ "$SELECTED_ASSIGNED" = false ]; then
+        if ! gh issue edit "$number" --add-assignee @me >/dev/null; then
+            echo "could not add current user as assignee on issue #$number" >&2
+            return 1
+        fi
+        added=true
     fi
-    gh issue edit "$number" --add-assignee @me >/dev/null
-    count="$(gh issue view "$number" --json assignees --jq '.assignees | length')"
-    if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -ne 1 ]; then
-        gh issue edit "$number" --remove-assignee @me >/dev/null 2>&1 || true
+
+    # Refetch after selection/claim and verify identity, not merely count. A
+    # concurrent reassignment can otherwise leave a different sole assignee and
+    # make this worker duplicate their work. Resumes need the same fresh check.
+    claim_json="$(gh issue view "$number" --json assignees)" || claim_json=""
+    login="$(jq -r 'if (.assignees | length) == 1 then .assignees[0].login else "" end' \
+        <<< "$claim_json" 2>/dev/null || true)"
+    if [ "$login" != "$CURRENT_LOGIN" ]; then
+        if [ "$added" = true ]; then
+            gh issue edit "$number" --remove-assignee @me >/dev/null 2>&1 || true
+        fi
         echo "claim race or verification failure for issue #$number" >&2
         return 1
+    fi
+    if [ "$SELECTED_ASSIGNED" = true ]; then
+        echo -e "${YELLOW}›${NC} Resuming issue #$number"
     fi
 }
 
@@ -586,12 +612,26 @@ while [ "$ITERATION" -lt "$MAX_ITERATIONS" ]; do
         continue
     fi
 
+    mkdir -p "$WORKTREE_ROOT"
+    if [ -L "$LOG_ROOT" ]; then
+        echo "Log root must not be a symlink: $LOG_ROOT" >&2
+        ACTIVE_WORKTREE=""
+        exit 1
+    fi
+    mkdir -p "$LOG_ROOT"
+    chmod 700 "$LOG_ROOT"
+    if ! mkdir -m 700 "$proposed_log_dir"; then
+        echo "Could not exclusively create private log directory: $proposed_log_dir" >&2
+        ACTIVE_WORKTREE=""
+        exit 1
+    fi
+
     claim_issue "$SELECTED_ID" || {
         echo -e "${YELLOW}○${NC} Issue #$SELECTED_ID could not be claimed; skipping"
+        rmdir "$proposed_log_dir" 2>/dev/null || true
         ACTIVE_WORKTREE=""
         continue
     }
-    mkdir -p "$WORKTREE_ROOT" "$proposed_log_dir"
     AGENT_LOOP_LOG_DIR="$proposed_log_dir"
     # Never let the issue branch inherit origin/<base> as its upstream. With
     # push.default=upstream, a bare `git push` from a worker/reviewer would

@@ -81,7 +81,10 @@ if args[:3] == ['api', 'user', '--jq']:
 elif args[:2] == ['issue', 'view']:
     number = args[2]
     issue = issues.get(number, {'number': int(number), 'title': 'fixture', 'body': '', 'state': 'OPEN', 'labels': [{'name': 'dev: agent'}], 'assignees': []})
-    if 'closedByPullRequestsReferences' in ' '.join(args):
+    if args[3:] == ['--json', 'assignees']:
+        login = os.environ.get('AGENT_VERIFIED_ASSIGNEE', 'tester')
+        print(json.dumps({'assignees': ([{'login': login}] if login else [])}))
+    elif 'closedByPullRequestsReferences' in ' '.join(args):
         dep = json.loads(os.environ.get('AGENT_ISSUE_DEPENDENCIES', '{}')).get(number, [])
         for row in dep:
             print('\t'.join(str(value) for value in row))
@@ -489,3 +492,58 @@ def test_missing_default_codex_fails_before_claim(
     gh_log = state_dir / "gh.log"
     assert not gh_log.exists() or "issue edit" not in gh_log.read_text(encoding="utf-8")
     assert not (tmp_path / "worktrees").exists()
+
+
+def test_allowlist_does_not_bypass_ready_eligibility(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "15", "--dry-run"],
+        issues=[_issue(15, "Blocked by #99")],
+        config=_config(tmp_path),
+        extra_env={"AGENT_READY_JSON": "[]"},
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Allowlisted issue #15 is not ready" in result.stderr
+    assert "Issue #15 (" not in result.stdout
+    gh_log = (consumer[3] / "gh.log").read_text(encoding="utf-8")
+    assert "issue edit" not in gh_log
+
+
+@pytest.mark.parametrize("assigned", [False, True])
+def test_claim_and_resume_revalidate_assignee_identity(
+    consumer: tuple[Path, Path, Path, Path],
+    tmp_path: Path,
+    assigned: bool,
+) -> None:
+    args = ["--issues", "16"]
+    if assigned:
+        args.append("--resume")
+    result = _run(
+        consumer,
+        args,
+        issues=[_issue(16, assigned=assigned)],
+        config=_config(tmp_path),
+        extra_env={"AGENT_VERIFIED_ASSIGNEE": "other-user"},
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "could not be claimed; skipping" in result.stdout
+    assert not list((tmp_path / "worktrees").glob("*"))
+
+
+def test_persistent_logs_are_owner_only(
+    consumer: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
+    result = _run(
+        consumer,
+        ["--issues", "17"],
+        issues=[_issue(17)],
+        config=_config(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    log_dirs = list((tmp_path / "logs").iterdir())
+    assert len(log_dirs) == 1
+    assert stat.S_IMODE(log_dirs[0].stat().st_mode) == 0o700
+    for log_file in log_dirs[0].iterdir():
+        assert stat.S_IMODE(log_file.stat().st_mode) & 0o077 == 0
