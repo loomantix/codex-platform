@@ -160,6 +160,12 @@ def _run(
         config, encoding="utf-8"
     )
     env = os.environ.copy()
+    # The temporary ready.py/gh fixtures are black-box shell dependencies, not
+    # coverage targets. pytest-cov exports COV_CORE_* for subprocess collection;
+    # letting these standalone stubs auto-start coverage can produce statement
+    # data that pytest-cov 6 cannot combine with this repo's branch data.
+    for key in [name for name in env if name.startswith("COV_CORE_")]:
+        env.pop(key)
     env.update(
         {
             "PATH": f"{bin_dir}:{env['PATH']}",
