@@ -661,7 +661,19 @@ finishing a saved result, and resuming an aborted run within its original budget
 These operations do not consume another model pass. Never silently reset the
 budget, discard a finding, fabricate evidence, or invoke an unapproved reviewer.
 
-Attestation identity is `(run, engine, round)`. A run is delimited by its
+### Helper version prerequisite
+
+The run-scoped attestation and `finalize` capabilities below require the
+published review-ledger 1.4 or later. They are not available in the currently
+vendored 1.3 helper. Before activating these capabilities, vendor the compatible
+published bundle and its version/integrity metadata through the normal verified
+dependency update. Never edit the vendored bundle or present unsupported recovery
+as completed. With 1.3, preserve the original result and pre-pass snapshot; use
+the existing `validate-result` and `attest` flow only when its ordinary invariants
+accept that evidence. A cross-run identity collision must await the compatible
+helper update, without spending another review pass or rewriting history.
+
+With the compatible helper, attestation identity is `(run, engine, round)`. A run is delimited by its
 authenticated `local-review-run:v1` comment, validated with the controller's
 content digest and supersession chain. Legacy attestations before the first run
 keep their legacy namespace. Restarted round 1 can coexist with historical round
@@ -688,7 +700,10 @@ result. Reuse verified CI at the exact head when it ran the required full suite;
 state any incomplete or failed local run separately.
 
 The controller's `status --repo ... --pr ... --head ... --engine ...` reports
-the next action. For an aborted run use `resume-run --repo ... --pr ... --base
+the next action. Its `covered` action means this engine has exact-head evidence,
+including a completion after minor or material fixes; it does not assert overall
+relay convergence. Check the declared reviewers, material transitions, and thread
+dispositions separately. For an aborted run use `resume-run --repo ... --pr ... --base
 <original-base> --head <current-head>`; this appends a recovery record referencing
 the aborted terminal marker and preserves the run identity, completed passes,
 cleanup latches, and cap. A subsequent terminal marker includes `after=<resume

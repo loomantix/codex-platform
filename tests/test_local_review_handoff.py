@@ -160,7 +160,7 @@ def test_authorize_pass_enforces_run_cap_and_duplicate_passes(
         _row(
             21,
             f"<!-- local-review-pass:v3 engine=codex round=1 base={BASE} "
-            f"head={HEAD} result-sha256={'c' * 64} -->",
+            f"head={HEAD} result-sha256={'c' * 64} -->\nVerified pass.",
         ),
     ]
     monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
@@ -418,7 +418,7 @@ def test_resume_preserves_round_budget_and_supports_repeated_recovery(
     run_id = handoff.RUN_V1_RE.search(run_body).group("run_id")
     rows = [
         _row(20, run_body),
-        _row(21, f"<!-- local-review-pass:v3 engine=claude round=4 base={BASE} head={HEAD} result-sha256={'c' * 64} -->"),
+        _row(21, f"<!-- local-review-pass:v3 engine=claude round=4 base={BASE} head={HEAD} result-sha256={'c' * 64} -->\nVerified pass."),
         _row(22, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"),
     ]
     monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
@@ -485,7 +485,8 @@ def test_matching_body_recovers_identical_deliveries_and_ignores_quotes(handoff:
 @pytest.mark.parametrize("state,action,next_round", [
     ("empty", "start-run", None), ("active", "review", 1), ("quoted", "review", 1),
     ("covered", "covered", 2), ("aborted", "resume-run", 1),
-    ("cap", "finish-exhausted", 5),
+    ("cap", "finish-exhausted", 5), ("marker-only", "review", 1),
+    ("empty-content", "review", 1),
 ])
 def test_status_reports_recovery_without_manual_round_arithmetic(
     handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
@@ -494,10 +495,11 @@ def test_status_reports_recovery_without_manual_round_arithmetic(
     body = _run_body(handoff)
     run_id = handoff.RUN_V1_RE.search(body).group("run_id")
     rows = [] if state == "empty" else [_row(20, body)]
-    if state in {"covered", "cap"}:
+    if state in {"covered", "cap", "marker-only", "empty-content"}:
         round_number = 1 if state == "covered" else 4
         reviewed_head = HEAD if state == "covered" else OTHER_HEAD
-        rows.append(_row(21, f"<!-- local-review-pass:v3 engine=codex round={round_number} base={BASE} head={reviewed_head} result-sha256={'c' * 64} -->"))
+        content = "" if state == "marker-only" else "\n  " if state == "empty-content" else "\nVerified pass."
+        rows.append(_row(21, f"<!-- local-review-pass:v3 engine=codex round={round_number} base={BASE} head={reviewed_head} result-sha256={'c' * 64} -->" + content))
     if state == "aborted":
         rows.append(_row(22, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"))
     if state == "quoted":
@@ -508,8 +510,27 @@ def test_status_reports_recovery_without_manual_round_arithmetic(
     result = json.loads(capsys.readouterr().out)
     assert result["next_action"] == action
     assert result.get("next_round") == next_round
-    if state == "quoted":
+    if state in {"quoted", "marker-only", "empty-content"}:
         assert handoff.main(["authorize-pass", "--repo", REPO, "--pr", "7", "--head", HEAD, "--base", BASE, "--engine", "codex", "--round", "1"]) == 0
+
+
+@pytest.mark.parametrize("classification", ["minor", "material"])
+@pytest.mark.parametrize("round_number", [1, 4])
+def test_status_covers_current_head_completions(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], classification: str, round_number: int,
+) -> None:
+    rows = [_row(20, _run_body(handoff)), _row(
+        21, f"<!-- local-review-complete:v3 engine=codex round={round_number} "
+        f"base={BASE} before={OTHER_HEAD} head={HEAD} classification={classification} "
+        f"fingerprints=status-fix result-sha256={'c' * 64} -->\nVerified fix and validation.",
+    )]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    assert handoff.main(["status", "--repo", REPO, "--pr", "7", "--head", HEAD, "--engine", "codex"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["next_action"] == "covered"
+    assert result["passes"][0]["classification"] == classification
 
 
 def test_show_handoff_uses_latest_authenticated_comment(

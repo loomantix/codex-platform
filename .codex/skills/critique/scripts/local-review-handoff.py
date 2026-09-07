@@ -64,7 +64,7 @@ COMPLETE_V3_RE = re.compile(
     r"engine=(?P<engine>codex|claude|gemini|antigravity) "
     r"round=(?P<round>[1-9][0-9]*) base=[0-9a-f]{40} "
     r"before=[0-9a-f]{40} head=(?P<head>[0-9a-f]{40}) "
-    r"classification=(?:minor|material) fingerprints=[A-Za-z0-9._:/,-]* "
+    r"classification=(?P<classification>minor|material) fingerprints=[A-Za-z0-9._:/,-]* "
     r"result-sha256=[0-9a-f]{64} -->$",
     re.MULTILINE,
 )
@@ -386,13 +386,15 @@ def _pass_records(rows: list[dict[str, Any]], start_comment_id: int) -> list[dic
         body = row.get("body")
         if not isinstance(body, str):
             continue
-        marker = PASS_V3_RE.match(body) or COMPLETE_V3_RE.match(body)
-        if marker is not None:
+        clean = PASS_V3_RE.match(body)
+        marker = clean or COMPLETE_V3_RE.match(body)
+        if marker is not None and body[marker.end():].startswith("\n") and body[marker.end() + 1:].strip():
             passes.append({
                 "engine": "gemini" if marker.group("engine") == "antigravity" else marker.group("engine"),
                 "round": int(marker.group("round")),
                 "head": marker.group("head"),
-                "status": "clean" if PASS_V3_RE.match(body) else "changed",
+                "status": "clean" if clean else "changed",
+                "classification": None if clean else marker.group("classification"),
             })
     return passes
 
@@ -410,7 +412,9 @@ def _status(args: argparse.Namespace) -> None:
     passes = _pass_records(rows, cast(int, run["comment_id"]))
     highest = max((entry["round"] for entry in passes), default=1)
     owned = [entry for entry in passes if entry["engine"] == args.engine]
-    reviewed = next((entry for entry in reversed(owned) if entry["head"] == args.head and entry["status"] == "clean"), None)
+    # Coverage records this engine's evidence; convergence additionally checks
+    # the relay's material transitions and the other declared reviewers.
+    reviewed = next((entry for entry in reversed(owned) if entry["head"] == args.head), None)
     next_round = highest + int(any(entry["round"] == highest for entry in owned))
     if terminal is not None:
         action = "resume-run" if terminal["outcome"] == "aborted" else "finished"

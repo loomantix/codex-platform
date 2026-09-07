@@ -61,7 +61,7 @@ the launcher owns those settings and pins literal `--effort low`. Do not set
 ledger's "Recover interrupted reviews" path: inspect saved evidence and repair
 routine state under the existing authorization before reporting a blocker.
 Never fall back to the raw CLI or claim completion without verified evidence.
-The launcher owns a 45-minute pass timeout and disables the shorter print-mode
+The launcher owns a 30-minute pass timeout and disables the shorter print-mode
 background wait ceiling, so validation can finish within that outer budget. Operators may lower it with
 `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the hard 3600-second ceiling
 are rejected.
