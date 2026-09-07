@@ -176,6 +176,12 @@ verify their hypotheses, apply any fixes, then run one consolidated validation
 pass against the final head. Do not multiply the same validation across parallel
 lanes.
 
+If a runtime capacity limit rejects a bounded spawn attempt, treat independent
+workers as unavailable for the outstanding lanes. Run each remaining lens as a
+separate serial pass with the same scope and output contract. Do not retry in a
+loop, skip a lens, or block solely for lack of slots; disclose the local fallback
+and never claim serial passes were independent subagents.
+
 Read the repo-local review addendum first. Check for
 `.review/addendum.local.md` in the repository under review; if it exists, read it
 before selecting lenses and fold each of its sections into the brief of the lens
@@ -279,7 +285,8 @@ Run these lanes as independently as the active runtime permits:
 12. Use the ledger helper's resumable `dispose` transaction for every posted
     finding. Stop on any posting, push, disposition, or resolution failure; on
     an uncertain helper response, retry only the identical command.
-    12a. Before the attestation, run the repository's gating suite unfiltered, per
+    12a. Before the attestation, verify the repository's unfiltered gating suite
+    at the final head, reusing actual full-suite CI when available, per
     the ledger's "Validate before attesting". The targeted run in step 11
     dispositions findings and is not evidence for the pass. Name the command,
     config, and SHA in the attestation. A red gating run is itself a blocking

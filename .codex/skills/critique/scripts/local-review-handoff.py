@@ -328,7 +328,12 @@ def _run_state(
     for row in sorted(valid, key=lambda item: cast(int, item["id"])):
         body = row.get("body")
         comment_id = cast(int, row["id"])
-        if not isinstance(body, str) or body in seen:
+        if not isinstance(body, str):
+            continue
+        # These marker-only records carry no content digest. Ignore trailing
+        # ASCII whitespace without admitting indented or quoted examples.
+        body = body.rstrip(" \t\r\n\v\f")
+        if body in seen:
             continue
         marker = RUN_END_V1_RE.fullmatch(body)
         resume = RUN_RESUME_V1_RE.fullmatch(body)
@@ -373,10 +378,14 @@ def _resume_run(args: argparse.Namespace) -> None:
     _verify_head(args.repo, args.pr, args.head)
     terminal, latest_resume = _run_state(rows, cast(str, run["run_id"]))
     if terminal is None:
-        # Replay only the recovery this request would have written; an open run
-        # whose latest recovery names another head has nothing to resume.
+        # An active run needs no mutation. Only a recovery at this exact head
+        # is replay evidence; an older recovery must not be presented as one.
         if latest_resume is None or _resume_head(rows, latest_resume) != args.head:
-            _fail("the local-review run is open; there is nothing to resume")
+            print(json.dumps({
+                "head": args.head, "replayed": False, "status": "already_active",
+                "run_id": run["run_id"], "verified": True,
+            }, sort_keys=True))
+            return
         print(json.dumps({
             "comment_id": latest_resume, "head": args.head, "replayed": True,
             "run_id": run["run_id"], "verified": True,
@@ -398,7 +407,7 @@ def _resume_run(args: argparse.Namespace) -> None:
 def _resume_head(rows: list[dict[str, Any]], comment_id: int) -> str:
     for row in rows:
         if row.get("id") == comment_id and isinstance(row.get("body"), str):
-            resume = RUN_RESUME_V1_RE.fullmatch(cast(str, row["body"]))
+            resume = RUN_RESUME_V1_RE.fullmatch(cast(str, row["body"]).rstrip(" \t\r\n\v\f"))
             if resume is not None:
                 return resume.group("head")
     _fail("local-review run recovery marker is malformed")
@@ -407,6 +416,7 @@ def _resume_head(rows: list[dict[str, Any]], comment_id: int) -> str:
 def _pass_records(rows: list[dict[str, Any]], run: dict[str, Any]) -> list[dict[str, Any]]:
     """Use the same unquoted, run-scoped evidence for planning and admission."""
     passes: list[dict[str, Any]] = []
+    identities: dict[tuple[str, int], str] = {}
     start_comment_id = cast(int, run["comment_id"])
     for row in rows:
         if not isinstance(row.get("id"), int) or row["id"] <= start_comment_id:
@@ -426,10 +436,16 @@ def _pass_records(rows: list[dict[str, Any]], run: dict[str, Any]) -> list[dict[
                 "status": "clean" if clean else "changed",
                 "classification": None if clean else marker.group("classification"),
             }
-            prior = next((p for p in passes if (p["engine"], p["round"]) == (entry["engine"], entry["round"])), None)
-            if prior is not None and prior != entry:
+            identity = (cast(str, entry["engine"]), cast(int, entry["round"]))
+            # Compare every sealed field, not just the scheduling projection.
+            # Explanatory prose may change; the supported engine alias may not
+            # create a second identity for otherwise identical evidence.
+            sealed = marker.group(0).replace("engine=antigravity ", "engine=gemini ", 1)
+            prior = identities.get(identity)
+            if prior is not None and prior != sealed:
                 _fail("local-review run holds contradictory attestations for one engine round")
             if prior is None:
+                identities[identity] = sealed
                 passes.append(entry)
     return passes
 

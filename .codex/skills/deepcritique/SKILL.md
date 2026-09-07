@@ -152,6 +152,13 @@ into lane prompts.
 
 Deep critique is not a single generalized review. If the active Codex runtime permits subagents/delegation, use independent reviewers for every applicable lane. If subagents are unavailable or not permitted, run a separate local pass for every applicable lane and disclose the downgrade in the final output.
 
+A runtime capacity refusal means independent workers are unavailable for that
+attempt even when the tool is listed. After one bounded spawn attempt, use
+separate serial passes for every outstanding lens; do not retry in a loop or
+block the authorized review solely for lack of slots. Retain completed lane
+results, finish the full applicable roster, and disclose which lanes used the
+local fallback. Never describe serial passes as independent subagents.
+
 Invoking `deepcritique` is an explicit request to use independent subagents for the
 six core review lanes, plus the conditional tenant-coupling lane when signaled,
 whenever the active runtime exposes subagent/delegation tools. Do not require the

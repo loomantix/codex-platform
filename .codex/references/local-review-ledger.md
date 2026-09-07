@@ -668,11 +668,11 @@ budget, discard a finding, fabricate evidence, or invoke an unapproved reviewer.
 ### Helper version prerequisite
 
 The run-scoped attestation and `finalize` capabilities below require the
-published review-ledger 1.4 or later. They are not available in the currently
-vendored 1.3 helper. Before activating these capabilities, vendor the compatible
+published review-ledger 1.4 or later. They are unavailable in earlier helpers.
+Before activating these capabilities, vendor the compatible
 published bundle and its version/integrity metadata through the normal verified
 dependency update. Never edit the vendored bundle or present unsupported recovery
-as completed. With 1.3, preserve the original result and pre-pass snapshot; use
+as completed. With an earlier helper, preserve the original result and pre-pass snapshot; use
 the existing `validate-result` and `attest` flow only when its ordinary invariants
 accept that evidence. A cross-run identity collision must await the compatible
 helper update, without spending another review pass or rewriting history.
@@ -696,8 +696,10 @@ node <ledger-helper> finalize --repo <owner/repo> --pr <number> \
 ```
 
 Omit the snapshot only when the pass inherited no v3 records. Do not reconstruct
-it after posting findings. `finalize` derives and seals identity from the saved
-result and rechecks every normal attestation invariant. It never converts a
+it after posting findings. `finalize` reads identity and the result digest from
+the saved result, which it trusts as the original, and rechecks every normal
+attestation invariant; a caller holding the pre-pass digest uses `attest`
+instead. It never converts a
 blocked or incomplete result into a pass. A reviewer exit status, timeout, or
 silence alone is neither completion evidence nor a reason to discard a valid
 result. Reuse verified CI at the exact head when it ran the required full suite;
@@ -721,6 +723,14 @@ cleanup latches, and cap. A subsequent terminal marker includes `after=<resume
 comment ID>`, so another interruption at the same head remains recoverable.
 Converged and exhausted runs cannot be reopened this way.
 
+If the run is already active, `resume-run` is a no-op: it reports
+`status=already_active` and `replayed=false` without a recovery comment ID.
+An existing recovery at the requested head may instead replay its actual ID;
+an older recovery is not evidence of a new recovery at the current head.
+This never changes the run identity or remaining round budget. Trailing ASCII
+whitespace on marker-only terminal/recovery records is ignored; leading text,
+malformed identities, and conflicting parent links remain invalid evidence.
+
 A target branch advancing along the pinned base's lineage does not invalidate
 an honest exact-head review record. Keep the original base in the result and
 fetch missing ancestry before retrying validation. Fresh-base integration and
@@ -732,9 +742,11 @@ under the existing authorization; do not send the user a generic ledger error.
 ## Validate before attesting
 
 A scoped run is the right validation for a _fix_. It is never sufficient
-evidence for a _pass_. Before writing any pass or completion attestation, run
-the repository's gating suite unfiltered, and state in the attestation which
-command and config it ran and at which SHA.
+evidence for a _pass_. Before writing any pass or completion attestation,
+verify a successful unfiltered run of the repository's required gating suite
+at the exact final head, and state its command, configuration, gates, and SHA
+in the attestation. Actual full-suite CI at that head satisfies this requirement
+and should be reused; do not rerun a broad local suite solely to duplicate it.
 
 Two failure modes make this non-optional, and both have shipped:
 
@@ -749,15 +761,23 @@ Two failure modes make this non-optional, and both have shipped:
   status; read which jobs actually ran, or run the suite yourself.
 
 Read the consumer repository's declared review gate — the commands its
-`AGENTS.md` (or `CLAUDE.md`) names as the gate — and run those. Where a
-repository declares none, run its broadest practical suite and say so. If the
+`AGENTS.md` (or `CLAUDE.md`) names as the gate — and verify those commands actually
+passed at the final head in CI, or run them locally if that evidence is missing.
+Where a repository declares none, use its broadest practical suite and say so.
+Read the actual CI job scope and required coverage gates; a green check list or
+scoped tests alone cannot establish full-suite coverage. If the
 gating run is genuinely impractical in the environment, the attestation must
 say that plainly instead of implying coverage it does not have.
 
-A gating run that fails is a blocking finding in its own right, even when the
+An unresolved code failure in a gating run is a blocking finding, even when the
 failure predates the round: an attestation cannot certify a head whose suite is
 red. This applies to a `clean` pass too — a round that changed nothing still
 attests to a head, and that head's suite can be red for reasons no lane examined.
+Report every failed or incomplete local run separately. If exact-head CI passed
+but a local run failed, reconcile the discrepancy: reuse CI only when evidence
+shows the local failure was environmental or an interruption, not an unresolved
+code failure. Never relabel that local run as passed or let green CI conceal a
+genuine failing path.
 
 ## Record clean passes and convergence
 

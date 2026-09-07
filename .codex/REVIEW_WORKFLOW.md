@@ -61,6 +61,12 @@ the launcher owns those settings and pins literal `--effort low`. Do not set
 ledger's "Recover interrupted reviews" path: inspect saved evidence and repair
 routine state under the existing authorization before reporting a blocker.
 Never fall back to the raw CLI or claim completion without verified evidence.
+This repository currently vendors review-ledger 1.3.0. The recovery guide's
+`finalize` and run-scoped attestation capabilities require a verified published
+1.4-or-later bundle and matching version/integrity metadata before use here.
+Until that dependency update, preserve saved results and snapshots and use the
+existing `validate-result`/`attest` path only when its ordinary checks accept the
+evidence; do not rewrite history or edit the vendored bundle to bypass a refusal.
 The launcher owns a 30-minute pass timeout and disables the shorter print-mode
 background wait ceiling, so validation can finish within that outer budget. Operators may lower it with
 `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the hard 3600-second ceiling

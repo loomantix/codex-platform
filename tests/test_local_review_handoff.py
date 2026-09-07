@@ -587,8 +587,8 @@ def test_status_does_not_report_a_stale_terminal_as_finished(
 
 
 @pytest.mark.parametrize("body_suffix,match", [
-    (" ", "terminal marker is malformed"),
-    ("\n", "terminal marker is malformed"),
+    (" extra prose", "terminal marker is malformed"),
+    ("\n<!-- local-review-run-end:v1 malformed -->", "terminal marker is malformed"),
 ])
 def test_run_state_fails_closed_on_a_malformed_terminal_marker(handoff: ModuleType, body_suffix: str, match: str) -> None:
     body = _run_body(handoff)
@@ -638,9 +638,14 @@ def test_resume_on_an_open_run_reports_only_a_real_recovery(
     rows = [_row(20, body)]
     monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
     monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    monkeypatch.setattr(handoff, "_post_issue_comment", lambda *args: pytest.fail("active run must not post"))
     resume = ["resume-run", "--repo", REPO, "--pr", "7", "--base", BASE, "--head", HEAD]
-    with pytest.raises(handoff.HandoffError, match="nothing to resume"):
-        handoff.main(resume)
+    assert handoff.main(resume) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "run_id": run_id, "head": HEAD, "status": "already_active",
+        "replayed": False, "verified": True,
+    }
+    assert len(rows) == 1
     rows.append(_row(21, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"))
     rows.append(_row(22, f"<!-- local-review-run-resume:v1 id={run_id} after=21 head={HEAD} -->"))
     assert handoff.main(resume) == 0
@@ -649,8 +654,78 @@ def test_resume_on_an_open_run_reports_only_a_real_recovery(
     assert result["comment_id"] == 22
     assert result["head"] == HEAD
     # A recovery recorded at another head is not a replay of this request.
-    with pytest.raises(handoff.HandoffError, match="nothing to resume"):
-        handoff.main(["resume-run", "--repo", REPO, "--pr", "7", "--base", BASE, "--head", OTHER_HEAD])
+    assert handoff.main(["resume-run", "--repo", REPO, "--pr", "7", "--base", BASE, "--head", OTHER_HEAD]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "run_id": run_id, "head": OTHER_HEAD, "status": "already_active",
+        "replayed": False, "verified": True,
+    }
+    assert len(rows) == 3
+
+
+@pytest.mark.parametrize("suffix", ["", " ", "\n", "\r\n\t ", "\v\f"])
+def test_recovery_marker_whitespace_preserves_canonical_ids_and_replay(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], suffix: str,
+) -> None:
+    run = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(run).group("run_id")
+    terminal = f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"
+    recovery = f"<!-- local-review-run-resume:v1 id={run_id} after=21 head={HEAD} -->"
+    rows = [_row(20, run), _row(21, terminal + suffix), _row(22, terminal),
+            _row(23, recovery + suffix), _row(24, recovery)]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    monkeypatch.setattr(handoff, "_post_issue_comment", lambda *args: pytest.fail("replay must not post"))
+    assert handoff._run_state(rows, run_id) == (None, 23)
+    assert handoff.main(["resume-run", "--repo", REPO, "--pr", "7", "--base", BASE, "--head", HEAD]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["replayed"] is True
+    assert result["comment_id"] == 23
+    assert result["head"] == HEAD
+    rows.append(_row(25, f"<!-- local-review-run-end:v1 id={run_id} outcome=converged head={HEAD} after=23 -->" + suffix))
+    assert handoff._run_state(rows, run_id) == ({"comment_id": 25, "head": HEAD, "outcome": "converged"}, 23)
+
+
+@pytest.mark.parametrize("kind", ["id", "head", "parent", "conflict"])
+def test_whitespace_normalization_does_not_accept_invalid_recovery_evidence(handoff: ModuleType, kind: str) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    terminal = f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"
+    recovery = f"<!-- local-review-run-resume:v1 id={run_id} after=21 head={HEAD} -->"
+    malformed = {
+        "id": recovery.replace(run_id, "z" * 64),
+        "head": recovery.replace(HEAD, "z" * 40),
+        "parent": recovery.replace("after=21", "after=19"),
+        "conflict": terminal.replace("aborted", "converged"),
+    }[kind]
+    rows = [_row(20, body), _row(21, terminal + "\n"), _row(22, malformed + "\r\n ")]
+    with pytest.raises(handoff.HandoffError):
+        handoff._run_state(rows, run_id)
+
+
+@pytest.mark.parametrize("prefix", ["> ", " ", "Example:\n", "```\n"])
+def test_whitespace_normalization_does_not_admit_quoted_markers(handoff: ModuleType, prefix: str) -> None:
+    marker = f"<!-- local-review-run-end:v1 id={'c' * 64} outcome=aborted head={HEAD} -->"
+    assert handoff._run_state([_row(21, prefix + marker + "\n")], "c" * 64) == (None, None)
+
+
+def test_active_resume_preserves_head_and_spent_round_guards(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows = [_row(20, _run_body(handoff)), _pass_row(21, "codex", 4)]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_run_gh", lambda args, payload=None: HEAD)
+    monkeypatch.setattr(handoff, "_post_issue_comment", lambda *args: pytest.fail("active run must not post"))
+    common = ["--repo", REPO, "--pr", "7", "--base", BASE]
+    assert handoff.main(["resume-run", *common, "--head", HEAD]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "already_active"
+    assert len(rows) == 2
+    with pytest.raises(handoff.HandoffError, match="head mismatch"):
+        handoff.main(["resume-run", *common, "--head", OTHER_HEAD])
+    with pytest.raises(handoff.HandoffError, match="already completed"):
+        handoff.main(["authorize-pass", *common, "--head", HEAD, "--engine", "codex", "--round", "4"])
+    with pytest.raises(handoff.HandoffError, match="exceeds the deep cap"):
+        handoff.main(["authorize-pass", *common, "--head", HEAD, "--engine", "codex", "--round", "5"])
 
 
 def test_resume_rejects_another_base(
@@ -690,6 +765,39 @@ def test_pass_records_reject_contradictory_evidence_for_one_engine_round(
         _status(handoff, capsys)
     with pytest.raises(handoff.HandoffError, match="contradictory attestations"):
         handoff.main(["authorize-pass", "--repo", REPO, "--pr", "7", "--head", HEAD, "--base", BASE, "--engine", "claude", "--round", "1"])
+
+
+@pytest.mark.parametrize("field", ["digest", "before", "fingerprints"])
+def test_pass_records_compare_complete_sealed_identity(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], field: str,
+) -> None:
+    marker = f"<!-- local-review-complete:v3 engine=codex round=1 base={BASE} before={OTHER_HEAD} head={HEAD} classification=material fingerprints=first result-sha256={'c' * 64} -->"
+    changed = {
+        "digest": marker.replace("c" * 64, "d" * 64),
+        "before": marker.replace(f"before={OTHER_HEAD}", f"before={'e' * 40}"),
+        "fingerprints": marker.replace("fingerprints=first", "fingerprints=second"),
+    }[field]
+    rows = [_row(20, _run_body(handoff)), _row(21, marker + "\nOriginal explanation."), _row(22, changed + "\nAnother explanation.")]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    with pytest.raises(handoff.HandoffError, match="contradictory attestations"):
+        _status(handoff, capsys)
+    with pytest.raises(handoff.HandoffError, match="contradictory attestations"):
+        handoff.main(["authorize-pass", "--repo", REPO, "--pr", "7", "--head", HEAD, "--base", BASE, "--engine", "claude", "--round", "1"])
+
+
+def test_pass_records_allow_changed_prose_and_normalized_engine_alias(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    first = _pass_row(21, "gemini", 1)
+    second = _row(22, first["body"].replace("engine=gemini", "engine=antigravity").replace("Verified pass.", "Updated explanation."))
+    rows = [_row(20, _run_body(handoff)), first, second]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    result = _status(handoff, capsys, "gemini")
+    assert result["next_action"] == "covered"
+    assert len(result["passes"]) == 1
+    assert result["passes"][0]["engine"] == "gemini"
 
 
 @pytest.mark.parametrize("classification", ["minor", "material"])
