@@ -83,6 +83,9 @@ Codex session when the Claude pass is complete."
 export AGENT_LOOP_REVIEW_BASE_SHA="$base"
 export AGENT_LOOP_REVIEW_ROUND="$round"
 export AGENT_LOOP_REVIEW_ENGINE="claude"
+# The outer timeout owns the pass lifetime. Do not let print mode discard
+# background validation after its shorter default wait ceiling.
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0
 
 exec timeout --signal=TERM --kill-after=30s "${review_timeout_seconds}s" \
     "$claude_review_cli" \

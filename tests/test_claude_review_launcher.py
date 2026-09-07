@@ -84,6 +84,7 @@ def test_launcher_executes_claude_with_literal_low_effort(tmp_path: Path) -> Non
         "        'base': os.environ.get('AGENT_LOOP_REVIEW_BASE_SHA'),\n"
         "        'round': os.environ.get('AGENT_LOOP_REVIEW_ROUND'),\n"
         "        'engine': os.environ.get('AGENT_LOOP_REVIEW_ENGINE'),\n"
+        "        'background_wait': os.environ.get('CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS'),\n"
         "    }}, out)\n",
         encoding="utf-8",
     )
@@ -128,7 +129,7 @@ def test_launcher_executes_claude_with_literal_low_effort(tmp_path: Path) -> Non
     assert "Continue review on PR #123" in argv[6]
     assert HEAD in argv[6]
     assert "round 1" in argv[6]
-    assert invocation["env"] == {"base": HEAD, "engine": "claude", "round": "1"}
+    assert invocation["env"] == {"base": HEAD, "engine": "claude", "round": "1", "background_wait": "0"}
 
 
 def test_launcher_rejects_a_caller_supplied_effort(tmp_path: Path) -> None:

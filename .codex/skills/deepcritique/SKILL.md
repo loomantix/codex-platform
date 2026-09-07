@@ -19,9 +19,16 @@ Never invoke the raw `claude` CLI directly, through a hand-composed shell
 command, or through a replacement wrapper. Never supply or override Claude's
 model, effort, permission, persistence, or output options; the tested launcher
 owns those settings and pins literal `--effort low`. Do not set
-`CLAUDE_REVIEW_CLI` outside launcher tests. If the launcher is missing, rejects
-the exact-head preflight, or fails, stop and report the blocker. Do not fall
-back to a direct Claude invocation.
+`CLAUDE_REVIEW_CLI` outside launcher tests. A missing or incompatible launcher,
+and a cap-exhausted `authorize-pass` refusal, remain blockers: report them. The
+launcher preflight rejects only a repository or author mismatch, a local, PR, or
+remote head that differs from `--head`, a dirty worktree, or an `authorize-pass`
+refusal; none of those is recoverable drift. Re-pin a moved head through
+`status`, clean the worktree, or report the blocker. If a launched pass is
+interrupted after preflight, follow "Recover interrupted reviews" in the ledger
+before yielding: inspect the saved result, reconcile live state, and resume — or
+finalize, once the vendored helper supports it — within the existing
+authorization. Do not fall back to a direct Claude invocation.
 
 ## Context Window Check
 
@@ -91,8 +98,12 @@ declared reviewer holding no attestation is not a stop: reviewer order within a
 round is a scheduling choice, not a protocol rule.
 
 Resolve this engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND`
-when the runner set it, otherwise one past the count of `local-review-pass:v3`
-and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds
+when the runner set it; otherwise use the controller's `status` command and its
+`next_round` for the current run. Follow `covered` or `resume-run` before starting
+another model pass. On a PR with no run and no v3 attestation, `no_run` means
+`start-run`, not a legacy round. Only a legacy PR that already carries
+pass/completion markers but no run boundary uses one past the count of this
+engine's pass/completion markers across the PR. Rounds
 1–2 are adversarial; round 3 and later are convergence rounds. State which
 applies before invoking a lane.
 
@@ -145,6 +156,13 @@ deduplication; do not paste the whole diff or the implementation conversation
 into lane prompts.
 
 Deep critique is not a single generalized review. If the active Codex runtime permits subagents/delegation, use independent reviewers for every applicable lane. If subagents are unavailable or not permitted, run a separate local pass for every applicable lane and disclose the downgrade in the final output.
+
+A runtime capacity refusal means independent workers are unavailable for that
+attempt even when the tool is listed. After one bounded spawn attempt, use
+separate serial passes for every outstanding lens; do not retry in a loop or
+block the authorized review solely for lack of slots. Retain completed lane
+results, finish the full applicable roster, and disclose which lanes used the
+local fallback. Never describe serial passes as independent subagents.
 
 Invoking `deepcritique` is an explicit request to use independent subagents for the
 six core review lanes, plus the conditional tenant-coupling lane when signaled,
@@ -232,8 +250,10 @@ Explicit Claude fallback:
 
 After a launcher returns to the outer controller, it verifies local, upstream,
 and PR heads plus the new ledger evidence before deciding whether the round converged. A fix invalidates
-only the attestations naming the superseded head. A launcher failure stops the
-chain; never retry with a hand-composed command.
+only the attestations naming the superseded head. A launcher interruption enters
+the ledger's recovery path; it does not automatically end the run or require
+another user approval. Never retry with a hand-composed command. Report a blocker
+only after the allowed deterministic recovery cannot resolve the missing work.
 
 If `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, always create the v3 structured
 result after the final lane. For `clean` or `changed`, call the ledger helper's

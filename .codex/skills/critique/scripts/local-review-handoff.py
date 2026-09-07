@@ -45,22 +45,26 @@ RUN_END_V1_RE = re.compile(
     r"^<!-- local-review-run-end:v1 "
     r"id=(?P<run_id>[0-9a-f]{64}) "
     r"outcome=(?P<outcome>converged|exhausted|aborted) "
-    r"head=(?P<head>[0-9a-f]{40}) -->$",
+    r"head=(?P<head>[0-9a-f]{40})(?: after=(?P<after>[1-9][0-9]*))? -->$",
     re.MULTILINE,
+)
+RUN_RESUME_V1_RE = re.compile(
+    r"^<!-- local-review-run-resume:v1 id=(?P<run_id>[0-9a-f]{64}) "
+    r"after=(?P<after>[1-9][0-9]*) head=(?P<head>[0-9a-f]{40}) -->$"
 )
 PASS_V3_RE = re.compile(
     r"^<!-- local-review-pass:v3 "
     r"engine=(?P<engine>codex|claude|gemini|antigravity) "
-    r"round=(?P<round>[1-9][0-9]*) base=[0-9a-f]{40} "
-    r"head=[0-9a-f]{40} result-sha256=[0-9a-f]{64} -->$",
+    r"round=(?P<round>[1-9][0-9]*) base=(?P<base>[0-9a-f]{40}) "
+    r"head=(?P<head>[0-9a-f]{40}) result-sha256=[0-9a-f]{64} -->$",
     re.MULTILINE,
 )
 COMPLETE_V3_RE = re.compile(
     r"^<!-- local-review-complete:v3 "
     r"engine=(?P<engine>codex|claude|gemini|antigravity) "
-    r"round=(?P<round>[1-9][0-9]*) base=[0-9a-f]{40} "
-    r"before=[0-9a-f]{40} head=[0-9a-f]{40} "
-    r"classification=(?:minor|material) fingerprints=[A-Za-z0-9._:/,-]* "
+    r"round=(?P<round>[1-9][0-9]*) base=(?P<base>[0-9a-f]{40}) "
+    r"before=[0-9a-f]{40} head=(?P<head>[0-9a-f]{40}) "
+    r"classification=(?P<classification>minor|material) fingerprints=[A-Za-z0-9._:/,-]* "
     r"result-sha256=[0-9a-f]{64} -->$",
     re.MULTILINE,
 )
@@ -194,9 +198,12 @@ def _post_issue_comment(repo: str, pr: int, marker: str, body: str) -> tuple[int
             if comment_id is None:
                 raise
             replayed = True
-    _verify_issue_comment(repo, comment_id, body)
-    if _matching_body(_issue_comments(repo, pr), marker, body) != comment_id:
+    canonical_id = _matching_body(_issue_comments(repo, pr), marker, body)
+    if canonical_id is None:
         _fail("comment idempotency key did not resolve to the posted comment")
+    replayed = replayed or canonical_id != comment_id
+    comment_id = canonical_id
+    _verify_issue_comment(repo, comment_id, body)
     return comment_id, replayed
 
 
@@ -310,25 +317,176 @@ def _run_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return records
 
 
-def _run_end(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any] | None:
-    matches: list[dict[str, Any]] = []
-    for row in rows:
+def _run_state(
+    rows: list[dict[str, Any]], run_id: str
+) -> tuple[dict[str, Any] | None, int | None]:
+    """Return the run's open terminal marker and its latest recovery comment id."""
+    terminal: dict[str, Any] | None = None
+    seen: set[str] = set()
+    latest_resume: int | None = None
+    valid = [row for row in rows if isinstance(row.get("id"), int)]
+    for row in sorted(valid, key=lambda item: cast(int, item["id"])):
         body = row.get("body")
-        comment_id = row.get("id")
-        if not isinstance(body, str) or not isinstance(comment_id, int):
+        comment_id = cast(int, row["id"])
+        if not isinstance(body, str):
+            continue
+        # These marker-only records carry no content digest. Ignore trailing
+        # ASCII whitespace without admitting indented or quoted examples.
+        body = body.rstrip(" \t\r\n\v\f")
+        if body in seen:
             continue
         marker = RUN_END_V1_RE.fullmatch(body)
+        resume = RUN_RESUME_V1_RE.fullmatch(body)
+        if marker is None and body.startswith("<!-- local-review-run-end:v1"):
+            _fail("local-review run terminal marker is malformed")
+        if resume is None and body.startswith("<!-- local-review-run-resume:v1"):
+            _fail("local-review run recovery marker is malformed")
         if marker is not None and marker.group("run_id") == run_id:
-            matches.append(
-                {
-                    "comment_id": comment_id,
-                    "head": marker.group("head"),
-                    "outcome": marker.group("outcome"),
-                }
-            )
-    if len(matches) > 1:
-        _fail("local-review run has more than one terminal marker")
-    return matches[0] if matches else None
+            if terminal is not None:
+                _fail("local-review run has more than one terminal marker")
+            after = marker.group("after")
+            if (None if after is None else int(after)) != latest_resume:
+                _fail("review-run terminal marker does not follow its latest recovery")
+            terminal = {
+                "comment_id": comment_id,
+                "head": marker.group("head"),
+                "outcome": marker.group("outcome"),
+            }
+            seen.add(body)
+        if resume is not None and resume.group("run_id") == run_id:
+            if terminal is None or terminal["outcome"] != "aborted" or terminal["comment_id"] != int(resume.group("after")):
+                _fail("review-run recovery must reference its most recent aborted terminal marker")
+            terminal = None
+            latest_resume = comment_id
+            seen.add(body)
+    return terminal, latest_resume
+
+
+def _run_end(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any] | None:
+    return _run_state(rows, run_id)[0]
+
+
+def _resume_run(args: argparse.Namespace) -> None:
+    """Recover bookkeeping interruptions without spending or resetting rounds."""
+    rows = _issue_comments(args.repo, args.pr)
+    records = _run_records(rows)
+    if not records:
+        _fail("no authorized review run exists to resume")
+    run = records[-1]
+    if run["base"] != args.base:
+        _fail("resume must preserve the authorized pinned review base")
+    _verify_head(args.repo, args.pr, args.head)
+    terminal, latest_resume = _run_state(rows, cast(str, run["run_id"]))
+    if terminal is None:
+        # An active run needs no mutation. Only a recovery at this exact head
+        # is replay evidence; an older recovery must not be presented as one.
+        if latest_resume is None or _resume_head(rows, latest_resume) != args.head:
+            print(json.dumps({
+                "head": args.head, "replayed": False, "status": "already_active",
+                "run_id": run["run_id"], "verified": True,
+            }, sort_keys=True))
+            return
+        print(json.dumps({
+            "comment_id": latest_resume, "head": args.head, "replayed": True,
+            "run_id": run["run_id"], "verified": True,
+        }, sort_keys=True))
+        return
+    if terminal["outcome"] != "aborted":
+        _fail("a converged or exhausted review run cannot be resumed; recovery never resets the round budget")
+    marker = f"<!-- local-review-run-resume:v1 id={run['run_id']} after={terminal['comment_id']} head={args.head} -->"
+    comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, marker)
+    _verify_head(args.repo, args.pr, args.head)
+    if _run_end(_issue_comments(args.repo, args.pr), cast(str, run["run_id"])) is not None:
+        _fail("review run did not resume")
+    print(json.dumps({
+        "comment_id": comment_id, "head": args.head, "replayed": replayed,
+        "run_id": run["run_id"], "verified": True,
+    }, sort_keys=True))
+
+
+def _resume_head(rows: list[dict[str, Any]], comment_id: int) -> str:
+    for row in rows:
+        if row.get("id") == comment_id and isinstance(row.get("body"), str):
+            resume = RUN_RESUME_V1_RE.fullmatch(cast(str, row["body"]).rstrip(" \t\r\n\v\f"))
+            if resume is not None:
+                return resume.group("head")
+    _fail("local-review run recovery marker is malformed")
+
+
+def _pass_records(rows: list[dict[str, Any]], run: dict[str, Any]) -> list[dict[str, Any]]:
+    """Use the same unquoted, run-scoped evidence for planning and admission."""
+    passes: list[dict[str, Any]] = []
+    identities: dict[tuple[str, int], str] = {}
+    start_comment_id = cast(int, run["comment_id"])
+    for row in rows:
+        if not isinstance(row.get("id"), int) or row["id"] <= start_comment_id:
+            continue
+        body = row.get("body")
+        if not isinstance(body, str):
+            continue
+        clean = PASS_V3_RE.match(body)
+        marker = clean or COMPLETE_V3_RE.match(body)
+        if marker is not None and body[marker.end():].startswith("\n") and body[marker.end() + 1:].strip():
+            if marker.group("base") != run["base"]:
+                _fail("local-review attestation base does not match the run's pinned base")
+            entry = {
+                "engine": "gemini" if marker.group("engine") == "antigravity" else marker.group("engine"),
+                "round": int(marker.group("round")),
+                "head": marker.group("head"),
+                "status": "clean" if clean else "changed",
+                "classification": None if clean else marker.group("classification"),
+            }
+            identity = (cast(str, entry["engine"]), cast(int, entry["round"]))
+            # Compare every sealed field, not just the scheduling projection.
+            # Explanatory prose may change; the supported engine alias may not
+            # create a second identity for otherwise identical evidence.
+            sealed = marker.group(0).replace("engine=antigravity ", "engine=gemini ", 1)
+            prior = identities.get(identity)
+            if prior is not None and prior != sealed:
+                _fail("local-review run holds contradictory attestations for one engine round")
+            if prior is None:
+                identities[identity] = sealed
+                passes.append(entry)
+    return passes
+
+
+def _status(args: argparse.Namespace) -> None:
+    """Give automated callers the next action without turning gaps into errors."""
+    rows = _issue_comments(args.repo, args.pr)
+    runs = _run_records(rows)
+    _verify_head(args.repo, args.pr, args.head)
+    if not runs:
+        print(json.dumps({"next_action": "start-run", "reason": "no_run"}))
+        return
+    run = runs[-1]
+    terminal = _run_end(rows, cast(str, run["run_id"]))
+    passes = _pass_records(rows, run)
+    highest = max((entry["round"] for entry in passes), default=1)
+    owned = [entry for entry in passes if entry["engine"] == args.engine]
+    # Coverage records this engine's evidence; convergence additionally checks
+    # the relay's material transitions and the other declared reviewers.
+    reviewed = next((entry for entry in reversed(owned) if entry["head"] == args.head), None)
+    next_round = highest + int(any(entry["round"] == highest for entry in owned))
+    reason = None
+    if terminal is not None and terminal["outcome"] == "aborted":
+        action = "resume-run"
+    elif terminal is not None and terminal["head"] != args.head:
+        # The run closed at another head; this head needs its own run.
+        action, reason = "start-run", "terminal_head_stale"
+    elif terminal is not None:
+        action = "finished"
+    elif reviewed:
+        action = "covered"
+    elif next_round > run["max_rounds"]:
+        action = "finish-exhausted"
+    else:
+        action = "review"
+    print(json.dumps({
+        "next_action": action, "run_id": run["run_id"], "base": run["base"],
+        "head": args.head, "engine": args.engine, "next_round": next_round,
+        "max_rounds": run["max_rounds"], "passes": passes,
+        "reason": reason, "terminal": terminal,
+    }, sort_keys=True))
 
 
 def _start_run(args: argparse.Namespace) -> None:
@@ -419,25 +577,9 @@ def _authorize_pass(args: argparse.Namespace) -> None:
             f"review round {args.round} exceeds the {run['tier']} cap "
             f"of {run['max_rounds']}"
         )
-    existing: set[tuple[str, int]] = set()
-    highest_round = 0
-    start_comment_id = cast(int, run["comment_id"])
-    for row in rows:
-        if (
-            not isinstance(row.get("id"), int)
-            or cast(int, row["id"]) <= start_comment_id
-        ):
-            continue
-        body = row.get("body")
-        if not isinstance(body, str):
-            continue
-        for marker in (*PASS_V3_RE.finditer(body), *COMPLETE_V3_RE.finditer(body)):
-            engine = marker.group("engine")
-            if engine == "antigravity":
-                engine = "gemini"
-            round_number = int(marker.group("round"))
-            existing.add((engine, round_number))
-            highest_round = max(highest_round, round_number)
+    passes = _pass_records(rows, run)
+    existing = {(entry["engine"], entry["round"]) for entry in passes}
+    highest_round = max((entry["round"] for entry in passes), default=0)
     if (args.engine, args.round) in existing:
         _fail("this engine already completed the requested run round")
     if args.round > highest_round + 1:
@@ -465,10 +607,11 @@ def _finish_run(args: argparse.Namespace) -> None:
     if not records:
         _fail("no authenticated local-review run exists")
     run = records[-1]
-    existing = _run_end(rows, cast(str, run["run_id"]))
+    existing, latest_resume = _run_state(rows, cast(str, run["run_id"]))
+    after = "" if latest_resume is None else f" after={latest_resume}"
     marker = (
         f"<!-- local-review-run-end:v1 id={run['run_id']} "
-        f"outcome={args.outcome} head={args.head} -->"
+        f"outcome={args.outcome} head={args.head}{after} -->"
     )
     if existing is not None:
         if existing["head"] != args.head or existing["outcome"] != args.outcome:
@@ -571,15 +714,13 @@ def _verify_issue_comment(repo: str, comment_id: int, expected_body: str) -> Non
 
 
 def _matching_body(rows: list[dict[str, Any]], marker: str, body: str) -> int | None:
-    matches = [row for row in rows if marker in str(row.get("body", ""))]
+    matches = [row for row in rows if row.get("body") == marker or str(row.get("body", "")).startswith(marker + "\n")]
     if not matches:
         return None
-    if len(matches) != 1:
-        _fail("handoff idempotency key is duplicated")
-    row = matches[0]
-    if row.get("body") != body or not isinstance(row.get("id"), int):
-        _fail("handoff idempotency key already exists with conflicting content")
-    return cast(int, row["id"])
+    for row in matches:
+        if row.get("body") != body or not isinstance(row.get("id"), int):
+            _fail("handoff idempotency key already exists with conflicting content")
+    return min(cast(int, row["id"]) for row in matches)
 
 
 def _post_handoff(args: argparse.Namespace) -> None:
@@ -712,6 +853,20 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--authorization-file", required=True)
     start.add_argument("--restart", action="store_true")
     start.set_defaults(handler=_start_run)
+
+    resume = commands.add_parser("resume-run")
+    resume.add_argument("--repo", required=True)
+    resume.add_argument("--pr", required=True, type=int)
+    resume.add_argument("--head", required=True, type=_sha)
+    resume.add_argument("--base", required=True, type=_sha)
+    resume.set_defaults(handler=_resume_run)
+
+    status = commands.add_parser("status")
+    status.add_argument("--repo", required=True)
+    status.add_argument("--pr", required=True, type=int)
+    status.add_argument("--head", required=True, type=_sha)
+    status.add_argument("--engine", required=True, choices=ENGINES)
+    status.set_defaults(handler=_status)
 
     authorize = commands.add_parser("authorize-pass")
     authorize.add_argument("--repo", required=True)

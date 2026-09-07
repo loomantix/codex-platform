@@ -33,8 +33,12 @@ separate-session protocol transition requires another reviewer.
 
 Resolve this engine's round number per `.codex/references/local-review-ledger.md`
 before selecting lanes: use `$AGENT_LOOP_REVIEW_ROUND` when the runner set it,
-take it from an invoking `deepcritique`, or count the `local-review-pass:v3` and
-`local-review-complete:v3` markers on the PR naming `engine=codex` and add one.
+take it from an invoking `deepcritique`, or use the controller's `status` and
+`next_round` for the current run. Do not count historical runs as current rounds.
+Follow its recovery/coverage action before invoking another reviewer. On a PR
+with no run and no v3 attestation, `no_run` means `start-run`, not a legacy
+round. Only a legacy PR that already carries pass/completion markers but no run
+boundary uses one past this engine's total pass-marker count.
 
 - **Rounds 1–2 run adversarially.** The stance, matrices, and fix bias below
   apply as written.
@@ -174,6 +178,12 @@ verify their hypotheses, apply any fixes, then run one consolidated validation
 pass against the final head. Do not multiply the same validation across parallel
 lanes.
 
+If a runtime capacity limit rejects a bounded spawn attempt, treat independent
+workers as unavailable for the outstanding lanes. Run each remaining lens as a
+separate serial pass with the same scope and output contract. Do not retry in a
+loop, skip a lens, or block solely for lack of slots; disclose the local fallback
+and never claim serial passes were independent subagents.
+
 Read the repo-local review addendum first. Check for
 `.review/addendum.local.md` in the repository under review; if it exists, read it
 before selecting lenses and fold each of its sections into the brief of the lens
@@ -277,7 +287,8 @@ Run these lanes as independently as the active runtime permits:
 12. Use the ledger helper's resumable `dispose` transaction for every posted
     finding. Stop on any posting, push, disposition, or resolution failure; on
     an uncertain helper response, retry only the identical command.
-    12a. Before the attestation, run the repository's gating suite unfiltered, per
+    12a. Before the attestation, verify the repository's unfiltered gating suite
+    at the final head, reusing actual full-suite CI when available, per
     the ledger's "Validate before attesting". The targeted run in step 11
     dispositions findings and is not evidence for the pass. Name the command,
     config, and SHA in the attestation. A red gating run is itself a blocking
