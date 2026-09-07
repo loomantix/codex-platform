@@ -379,9 +379,9 @@ per-round evidence, and no automated runner parses it.
 
 Resolve this engine's round number before selecting lanes. Use
 `$AGENT_LOOP_REVIEW_ROUND` when the automated runner set it. Otherwise ask the
-run controller (`local-review-handoff.py status`) for `next_round`: it counts
-only the attestations inside the current authorized run, so a restarted run
-never inherits historical rounds. Only when `status` reports `reason=no_run` —
+run controller's `status` command for `next_round`: it counts only the
+attestations inside the current authorized run, so a restarted run never
+inherits historical rounds. Only when `status` reports `reason=no_run` —
 a legacy PR with no run boundary — count the `local-review-pass:v3` and
 `local-review-complete:v3` markers on the PR that name this engine; this pass is
 one past that count.
@@ -703,9 +703,9 @@ silence alone is neither completion evidence nor a reason to discard a valid
 result. Reuse verified CI at the exact head when it ran the required full suite;
 state any incomplete or failed local run separately.
 
-The run controller — this engine's `local-review-handoff.py`, distinct from the
-ledger helper — reports the next action through
-`status --repo ... --pr ... --head ... --engine ...`:
+The run controller — the engine-specific script that owns run markers, named
+in your `REVIEW_WORKFLOW.md` and distinct from the ledger helper — reports the
+next action through `status --repo ... --pr ... --head ... --engine ...`:
 `start-run`, `review`, `covered`, `resume-run`, `finish-exhausted`, or
 `finished`, with `next_round` present once a run exists.
 Its `covered` action means this engine has exact-head evidence, including a
