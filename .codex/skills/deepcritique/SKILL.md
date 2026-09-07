@@ -92,8 +92,10 @@ declared reviewer holding no attestation is not a stop: reviewer order within a
 round is a scheduling choice, not a protocol rule.
 
 Resolve this engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND`
-when the runner set it, otherwise one past the count of `local-review-pass:v3`
-and `local-review-complete:v3` markers on the PR naming `engine=codex`. Rounds
+when the runner set it; otherwise use the controller's `status` command and its
+`next_round` for the current run. Follow `covered` or `resume-run` before starting
+another model pass. Only a legacy PR with no run boundary uses one past the count
+of this engine's pass/completion markers across the PR. Rounds
 1–2 are adversarial; round 3 and later are convergence rounds. State which
 applies before invoking a lane.
 

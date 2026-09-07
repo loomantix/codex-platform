@@ -440,6 +440,9 @@ def test_resume_preserves_round_budget_and_supports_repeated_recovery(
         count = len(rows)
         assert handoff.main(resume) == 0
         assert len(rows) == count
+        # A lost response may have left an identical delivery duplicate. It
+        # must not move the canonical recovery boundary or break finalization.
+        rows.append(_row(max(row["id"] for row in rows) + 1, rows[-1]["body"]))
         with pytest.raises(handoff.HandoffError, match="exceeds the deep cap"):
             handoff.main(["authorize-pass", *common, "--base", BASE, "--engine", "codex", "--round", "5"])
         with pytest.raises(handoff.HandoffError, match="already completed"):
@@ -468,6 +471,15 @@ def test_resume_rejects_a_fabricated_recovery_parent(handoff: ModuleType) -> Non
     rows = [_row(20, body), _row(21, f"<!-- local-review-run-resume:v1 id={run_id} after=19 head={HEAD} -->")]
     with pytest.raises(handoff.HandoffError, match="most recent aborted"):
         handoff._run_end(rows, run_id)
+
+
+def test_matching_body_recovers_identical_deliveries_and_ignores_quotes(handoff: ModuleType) -> None:
+    marker = "<!-- local-review-example:v1 -->"
+    body = marker + "\nVerified context."
+    rows = [_row(3, "Quoted:\n" + body), _row(5, body), _row(4, body)]
+    assert handoff._matching_body(rows, marker, body) == 4
+    with pytest.raises(handoff.HandoffError, match="conflicting content"):
+        handoff._matching_body(rows + [_row(6, marker + "\nChanged.")], marker, body)
 
 
 @pytest.mark.parametrize("state,action,next_round", [
@@ -571,8 +583,9 @@ def test_show_handoff_rejects_malformed_newest_marker(
         handoff.main(["show-handoff", "--repo", REPO, "--pr", "7", "--engine", "codex"])
 
 
-def test_post_handoff_rejects_concurrent_duplicate(
-    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("conflicting", [False, True])
+def test_post_handoff_recovers_only_identical_concurrent_duplicates(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, conflicting: bool
 ) -> None:
     stored: list[dict[str, Any]] = []
     comment_lists = 0
@@ -585,7 +598,7 @@ def test_post_handoff_rejects_concurrent_duplicate(
             comment_lists += 1
             if comment_lists == 1:
                 return json.dumps([[]])
-            duplicate = _row(78, cast(str, stored[0]["body"]))
+            duplicate = _row(78, cast(str, stored[0]["body"]) + ("changed" if conflicting else ""))
             return json.dumps([[stored[0], duplicate]])
         if args[-1] == f"repos/{REPO}/issues/7/comments":
             assert payload is not None
@@ -596,9 +609,7 @@ def test_post_handoff_rejects_concurrent_duplicate(
         raise AssertionError(args)
 
     monkeypatch.setattr(handoff, "_run_gh", fake_gh)
-    with pytest.raises(handoff.HandoffError, match="idempotency key is duplicated"):
-        handoff.main(
-            [
+    command = [
                 "post-handoff",
                 "--repo",
                 REPO,
@@ -617,7 +628,11 @@ def test_post_handoff_rejects_concurrent_duplicate(
                 "--outcome",
                 "clean",
             ]
-        )
+    if conflicting:
+        with pytest.raises(handoff.HandoffError, match="conflicting content"):
+            handoff.main(command)
+    else:
+        assert handoff.main(command) == 0
 
 
 def test_context_rejects_marker_injection(handoff: ModuleType, tmp_path: Path) -> None:

@@ -198,9 +198,12 @@ def _post_issue_comment(repo: str, pr: int, marker: str, body: str) -> tuple[int
             if comment_id is None:
                 raise
             replayed = True
-    _verify_issue_comment(repo, comment_id, body)
-    if _matching_body(_issue_comments(repo, pr), marker, body) != comment_id:
+    canonical_id = _matching_body(_issue_comments(repo, pr), marker, body)
+    if canonical_id is None:
         _fail("comment idempotency key did not resolve to the posted comment")
+    replayed = replayed or canonical_id != comment_id
+    comment_id = canonical_id
+    _verify_issue_comment(repo, comment_id, body)
     return comment_id, replayed
 
 
@@ -667,15 +670,13 @@ def _verify_issue_comment(repo: str, comment_id: int, expected_body: str) -> Non
 
 
 def _matching_body(rows: list[dict[str, Any]], marker: str, body: str) -> int | None:
-    matches = [row for row in rows if marker in str(row.get("body", ""))]
+    matches = [row for row in rows if row.get("body") == marker or str(row.get("body", "")).startswith(marker + "\n")]
     if not matches:
         return None
-    if len(matches) != 1:
-        _fail("handoff idempotency key is duplicated")
-    row = matches[0]
-    if row.get("body") != body or not isinstance(row.get("id"), int):
-        _fail("handoff idempotency key already exists with conflicting content")
-    return cast(int, row["id"])
+    for row in matches:
+        if row.get("body") != body or not isinstance(row.get("id"), int):
+            _fail("handoff idempotency key already exists with conflicting content")
+    return min(cast(int, row["id"]) for row in matches)
 
 
 def _post_handoff(args: argparse.Namespace) -> None:
