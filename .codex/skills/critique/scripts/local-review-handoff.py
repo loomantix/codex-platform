@@ -317,19 +317,21 @@ def _run_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return records
 
 
-def _run_end(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any] | None:
+def _run_state(
+    rows: list[dict[str, Any]], run_id: str
+) -> tuple[dict[str, Any] | None, int | None]:
+    """Return the run's open terminal marker and its latest recovery comment id."""
     terminal: dict[str, Any] | None = None
     seen: set[str] = set()
     latest_resume: int | None = None
-    for row in sorted(rows, key=lambda item: item["id"] if isinstance(item.get("id"), int) else 0):
+    valid = [row for row in rows if isinstance(row.get("id"), int)]
+    for row in sorted(valid, key=lambda item: cast(int, item["id"])):
         body = row.get("body")
-        comment_id = row.get("id")
-        if not isinstance(body, str) or not isinstance(comment_id, int):
+        comment_id = cast(int, row["id"])
+        if not isinstance(body, str) or body in seen:
             continue
         marker = RUN_END_V1_RE.fullmatch(body)
         if marker is not None and marker.group("run_id") == run_id:
-            if body in seen:
-                continue
             if terminal is not None:
                 _fail("local-review run has more than one terminal marker")
             after = marker.group("after")
@@ -343,14 +345,16 @@ def _run_end(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any] | None:
             seen.add(body)
         resume = RUN_RESUME_V1_RE.fullmatch(body)
         if resume is not None and resume.group("run_id") == run_id:
-            if body in seen:
-                continue
             if terminal is None or terminal["outcome"] != "aborted" or terminal["comment_id"] != int(resume.group("after")):
                 _fail("review-run recovery must reference its most recent aborted terminal marker")
             terminal = None
             latest_resume = comment_id
             seen.add(body)
-    return terminal
+    return terminal, latest_resume
+
+
+def _run_end(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any] | None:
+    return _run_state(rows, run_id)[0]
 
 
 def _resume_run(args: argparse.Namespace) -> None:
@@ -550,15 +554,8 @@ def _finish_run(args: argparse.Namespace) -> None:
     if not records:
         _fail("no authenticated local-review run exists")
     run = records[-1]
-    existing = _run_end(rows, cast(str, run["run_id"]))
-    recoveries: dict[str, int] = {}
-    for row in rows:
-        if not isinstance(row.get("id"), int) or not isinstance(row.get("body"), str):
-            continue
-        resume = RUN_RESUME_V1_RE.fullmatch(row["body"])
-        if resume is not None and resume.group("run_id") == run["run_id"]:
-            recoveries[row["body"]] = min(recoveries.get(row["body"], row["id"]), row["id"])
-    after = f" after={max(recoveries.values())}" if recoveries else ""
+    existing, latest_resume = _run_state(rows, cast(str, run["run_id"]))
+    after = "" if latest_resume is None else f" after={latest_resume}"
     marker = (
         f"<!-- local-review-run-end:v1 id={run['run_id']} "
         f"outcome={args.outcome} head={args.head}{after} -->"
