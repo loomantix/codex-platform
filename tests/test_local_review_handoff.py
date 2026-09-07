@@ -647,6 +647,49 @@ def test_resume_on_an_open_run_reports_only_a_real_recovery(
     result = json.loads(capsys.readouterr().out)
     assert result["replayed"] is True
     assert result["comment_id"] == 22
+    assert result["head"] == HEAD
+    # A recovery recorded at another head is not a replay of this request.
+    with pytest.raises(handoff.HandoffError, match="nothing to resume"):
+        handoff.main(["resume-run", "--repo", REPO, "--pr", "7", "--base", BASE, "--head", OTHER_HEAD])
+
+
+def test_resume_rejects_another_base(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    rows = [_row(20, body), _row(21, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->")]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    with pytest.raises(handoff.HandoffError, match="pinned review base"):
+        handoff.main(["resume-run", "--repo", REPO, "--pr", "7", "--base", "e" * 40, "--head", HEAD])
+
+
+def test_run_state_orders_evidence_by_comment_id(handoff: ModuleType) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    rows = [
+        _row(23, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} after=22 -->"),
+        _row(22, f"<!-- local-review-run-resume:v1 id={run_id} after=21 head={HEAD} -->"),
+        _row(21, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"),
+        _row(20, body),
+    ]
+    assert handoff._run_state(rows, run_id) == ({"comment_id": 23, "head": HEAD, "outcome": "aborted"}, 22)
+
+
+def test_pass_records_reject_contradictory_evidence_for_one_engine_round(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows = [_row(20, _run_body(handoff)), _pass_row(21, "codex", 1, head=OTHER_HEAD), _pass_row(22, "codex", 1, head=OTHER_HEAD)]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    # An identical redelivery collapses to one record.
+    assert len(_status(handoff, capsys)["passes"]) == 1
+    rows.append(_pass_row(23, "codex", 1, head=HEAD))
+    with pytest.raises(handoff.HandoffError, match="contradictory attestations"):
+        _status(handoff, capsys)
+    with pytest.raises(handoff.HandoffError, match="contradictory attestations"):
+        handoff.main(["authorize-pass", "--repo", REPO, "--pr", "7", "--head", HEAD, "--base", BASE, "--engine", "claude", "--round", "1"])
 
 
 @pytest.mark.parametrize("classification", ["minor", "material"])
@@ -745,7 +788,8 @@ def test_show_handoff_rejects_malformed_newest_marker(
 
 @pytest.mark.parametrize("conflicting", [False, True])
 def test_post_handoff_recovers_only_identical_concurrent_duplicates(
-    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, conflicting: bool
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], conflicting: bool,
 ) -> None:
     stored: list[dict[str, Any]] = []
     comment_lists = 0
@@ -758,14 +802,15 @@ def test_post_handoff_recovers_only_identical_concurrent_duplicates(
             comment_lists += 1
             if comment_lists == 1:
                 return json.dumps([[]])
-            duplicate = _row(78, cast(str, stored[0]["body"]) + ("changed" if conflicting else ""))
-            return json.dumps([[stored[0], duplicate]])
+            # The concurrent poster won the race, so its lower id is canonical.
+            duplicate = _row(76, cast(str, stored[0]["body"]) + ("changed" if conflicting else ""))
+            return json.dumps([[duplicate, stored[0]]])
         if args[-1] == f"repos/{REPO}/issues/7/comments":
             assert payload is not None
             stored.append(_row(77, cast(str, payload["body"])))
             return json.dumps({"id": 77})
-        if args[-1] == f"repos/{REPO}/issues/comments/77":
-            return json.dumps(stored[0])
+        if args[-1] == f"repos/{REPO}/issues/comments/76":
+            return json.dumps(_row(76, cast(str, stored[0]["body"])))
         raise AssertionError(args)
 
     monkeypatch.setattr(handoff, "_run_gh", fake_gh)
@@ -793,6 +838,9 @@ def test_post_handoff_recovers_only_identical_concurrent_duplicates(
             handoff.main(command)
     else:
         assert handoff.main(command) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert result["comment_id"] == 76
+        assert result["replayed"] is True
 
 
 def test_context_rejects_marker_injection(handoff: ModuleType, tmp_path: Path) -> None:

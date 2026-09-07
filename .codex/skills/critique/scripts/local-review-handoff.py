@@ -373,9 +373,14 @@ def _resume_run(args: argparse.Namespace) -> None:
     _verify_head(args.repo, args.pr, args.head)
     terminal, latest_resume = _run_state(rows, cast(str, run["run_id"]))
     if terminal is None:
-        if latest_resume is None:
+        # Replay only the recovery this request would have written; an open run
+        # whose latest recovery names another head has nothing to resume.
+        if latest_resume is None or _resume_head(rows, latest_resume) != args.head:
             _fail("the local-review run is open; there is nothing to resume")
-        print(json.dumps({"comment_id": latest_resume, "run_id": run["run_id"], "replayed": True, "verified": True}))
+        print(json.dumps({
+            "comment_id": latest_resume, "head": args.head, "replayed": True,
+            "run_id": run["run_id"], "verified": True,
+        }, sort_keys=True))
         return
     if terminal["outcome"] != "aborted":
         _fail("a converged or exhausted review run cannot be resumed; recovery never resets the round budget")
@@ -384,7 +389,19 @@ def _resume_run(args: argparse.Namespace) -> None:
     _verify_head(args.repo, args.pr, args.head)
     if _run_end(_issue_comments(args.repo, args.pr), cast(str, run["run_id"])) is not None:
         _fail("review run did not resume")
-    print(json.dumps({"comment_id": comment_id, "run_id": run["run_id"], "replayed": replayed, "verified": True}))
+    print(json.dumps({
+        "comment_id": comment_id, "head": args.head, "replayed": replayed,
+        "run_id": run["run_id"], "verified": True,
+    }, sort_keys=True))
+
+
+def _resume_head(rows: list[dict[str, Any]], comment_id: int) -> str:
+    for row in rows:
+        if row.get("id") == comment_id and isinstance(row.get("body"), str):
+            resume = RUN_RESUME_V1_RE.fullmatch(cast(str, row["body"]))
+            if resume is not None:
+                return resume.group("head")
+    _fail("local-review run recovery marker is malformed")
 
 
 def _pass_records(rows: list[dict[str, Any]], run: dict[str, Any]) -> list[dict[str, Any]]:
@@ -402,13 +419,18 @@ def _pass_records(rows: list[dict[str, Any]], run: dict[str, Any]) -> list[dict[
         if marker is not None and body[marker.end():].startswith("\n") and body[marker.end() + 1:].strip():
             if marker.group("base") != run["base"]:
                 _fail("local-review attestation base does not match the run's pinned base")
-            passes.append({
+            entry = {
                 "engine": "gemini" if marker.group("engine") == "antigravity" else marker.group("engine"),
                 "round": int(marker.group("round")),
                 "head": marker.group("head"),
                 "status": "clean" if clean else "changed",
                 "classification": None if clean else marker.group("classification"),
-            })
+            }
+            prior = next((p for p in passes if (p["engine"], p["round"]) == (entry["engine"], entry["round"])), None)
+            if prior is not None and prior != entry:
+                _fail("local-review run holds contradictory attestations for one engine round")
+            if prior is None:
+                passes.append(entry)
     return passes
 
 

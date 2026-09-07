@@ -19,8 +19,10 @@ Never invoke the raw `claude` CLI directly, through a hand-composed shell
 command, or through a replacement wrapper. Never supply or override Claude's
 model, effort, permission, persistence, or output options; the tested launcher
 owns those settings and pins literal `--effort low`. Do not set
-`CLAUDE_REVIEW_CLI` outside launcher tests. If the launcher is interrupted or
-rejects preflight, follow "Recover interrupted reviews" in the ledger before
+`CLAUDE_REVIEW_CLI` outside launcher tests. A missing or incompatible launcher,
+and a cap-exhausted `authorize-pass` refusal, remain blockers: report them. If
+a launched pass is interrupted or its exact-head preflight rejects routine
+metadata drift, follow "Recover interrupted reviews" in the ledger before
 yielding: inspect the saved result, reconcile live state, and resume — or
 finalize, once the vendored helper supports it — within the existing
 authorization. Do not fall back to a direct Claude invocation.

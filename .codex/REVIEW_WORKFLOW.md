@@ -195,6 +195,9 @@ engine in a fresh terminal.
    perform this check themselves; a Codex leg and the `agent-loop` review hooks
    are bounded by `review_max_rounds` and the whole-run deadline instead, so do
    not assume a pass is budget-checked merely because it was launched.
+   Before each pass, `local-review-handoff.py status` for the engine gives the
+   next action and `next_round` from the current run's own evidence; follow
+   `covered` or `resume-run` before spending another model pass.
    At cap exhaustion, stop, preserve the branch,
    worktree, and draft PR, and report non-convergence. Do not mark it ready.
 8. Converge when `verify-coverage` passes at the exact current head — a roster
@@ -205,6 +208,11 @@ engine in a fresh terminal.
    `local-review-handoff.py finish-run --outcome converged` and mark the PR
    ready. Record `exhausted` or `aborted` when those are the actual terminal
    outcomes. Never leave a terminal run open merely to permit another pass.
+   An `aborted` run is resumable within its original budget with
+   `local-review-handoff.py resume-run`; a converged or exhausted run is not,
+   and a later head needs a new run started with `--restart` under a fresh
+   user authorization (`status` reports `reason=terminal_head_stale`). See the
+   ledger's "Recover interrupted reviews".
 
 ### One publication per wrapper pass
 
