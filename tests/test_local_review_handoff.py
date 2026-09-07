@@ -411,6 +411,91 @@ def test_finish_run_replay_reverifies_the_current_head(
     assert json.loads(capsys.readouterr().out)["replayed"] is True
 
 
+def test_resume_preserves_round_budget_and_supports_repeated_recovery(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(run_body).group("run_id")
+    rows = [
+        _row(20, run_body),
+        _row(21, f"<!-- local-review-pass:v3 engine=claude round=4 base={BASE} head={HEAD} result-sha256={'c' * 64} -->"),
+        _row(22, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"),
+    ]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+
+    def post(repo: str, pr: int, marker: str, body: str) -> tuple[int, bool]:
+        for row in rows:
+            if row["body"] == body:
+                return row["id"], True
+        comment_id = max(row["id"] for row in rows) + 1
+        rows.append(_row(comment_id, body))
+        return comment_id, False
+
+    monkeypatch.setattr(handoff, "_post_issue_comment", post)
+    common = ["--repo", REPO, "--pr", "7", "--head", HEAD]
+    resume = ["resume-run", *common, "--base", BASE]
+    for _ in range(2):
+        assert handoff.main(resume) == 0
+        count = len(rows)
+        assert handoff.main(resume) == 0
+        assert len(rows) == count
+        with pytest.raises(handoff.HandoffError, match="exceeds the deep cap"):
+            handoff.main(["authorize-pass", *common, "--base", BASE, "--engine", "codex", "--round", "5"])
+        with pytest.raises(handoff.HandoffError, match="already completed"):
+            handoff.main(["authorize-pass", *common, "--base", BASE, "--engine", "claude", "--round", "4"])
+        assert handoff.main(["finish-run", *common, "--outcome", "aborted"]) == 0
+        assert handoff._run_end(rows, run_id)["outcome"] == "aborted"
+    assert len(handoff._run_records(rows)) == 1
+
+
+@pytest.mark.parametrize("outcome", ["converged", "exhausted"])
+def test_resume_cannot_reopen_a_completed_or_exhausted_run(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, outcome: str,
+) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    rows = [_row(20, body), _row(21, f"<!-- local-review-run-end:v1 id={run_id} outcome={outcome} head={HEAD} -->")]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    with pytest.raises(handoff.HandoffError, match="cannot be resumed"):
+        handoff.main(["resume-run", "--repo", REPO, "--pr", "7", "--base", BASE, "--head", HEAD])
+
+
+def test_resume_rejects_a_fabricated_recovery_parent(handoff: ModuleType) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    rows = [_row(20, body), _row(21, f"<!-- local-review-run-resume:v1 id={run_id} after=19 head={HEAD} -->")]
+    with pytest.raises(handoff.HandoffError, match="most recent aborted"):
+        handoff._run_end(rows, run_id)
+
+
+@pytest.mark.parametrize("state,action,next_round", [
+    ("empty", "start-run", None), ("active", "review", 1),
+    ("covered", "covered", 2), ("aborted", "resume-run", 1),
+    ("cap", "finish-exhausted", 5),
+])
+def test_status_reports_recovery_without_manual_round_arithmetic(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], state: str, action: str, next_round: int | None,
+) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    rows = [] if state == "empty" else [_row(20, body)]
+    if state in {"covered", "cap"}:
+        round_number = 1 if state == "covered" else 4
+        reviewed_head = HEAD if state == "covered" else OTHER_HEAD
+        rows.append(_row(21, f"<!-- local-review-pass:v3 engine=codex round={round_number} base={BASE} head={reviewed_head} result-sha256={'c' * 64} -->"))
+    if state == "aborted":
+        rows.append(_row(22, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"))
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    assert handoff.main(["status", "--repo", REPO, "--pr", "7", "--head", HEAD, "--engine", "codex"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["next_action"] == action
+    assert result.get("next_round") == next_round
+
+
 def test_show_handoff_uses_latest_authenticated_comment(
     handoff: ModuleType,
     monkeypatch: pytest.MonkeyPatch,

@@ -19,9 +19,10 @@ Never invoke the raw `claude` CLI directly, through a hand-composed shell
 command, or through a replacement wrapper. Never supply or override Claude's
 model, effort, permission, persistence, or output options; the tested launcher
 owns those settings and pins literal `--effort low`. Do not set
-`CLAUDE_REVIEW_CLI` outside launcher tests. If the launcher is missing, rejects
-the exact-head preflight, or fails, stop and report the blocker. Do not fall
-back to a direct Claude invocation.
+`CLAUDE_REVIEW_CLI` outside launcher tests. If the launcher is interrupted or
+rejects preflight, follow "Recover interrupted reviews" in the ledger before
+yielding: inspect the saved result, reconcile live state, and finalize or resume
+within the existing authorization. Do not fall back to a direct Claude invocation.
 
 ## Context Window Check
 
@@ -232,8 +233,10 @@ Explicit Claude fallback:
 
 After a launcher returns to the outer controller, it verifies local, upstream,
 and PR heads plus the new ledger evidence before deciding whether the round converged. A fix invalidates
-only the attestations naming the superseded head. A launcher failure stops the
-chain; never retry with a hand-composed command.
+only the attestations naming the superseded head. A launcher interruption enters
+the ledger's recovery path; it does not automatically end the run or require
+another user approval. Never retry with a hand-composed command. Report a blocker
+only after the allowed deterministic recovery cannot resolve the missing work.
 
 If `$AGENT_LOOP_REVIEW_RESULT_FILE` is set, always create the v3 structured
 result after the final lane. For `clean` or `changed`, call the ledger helper's

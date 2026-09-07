@@ -45,21 +45,25 @@ RUN_END_V1_RE = re.compile(
     r"^<!-- local-review-run-end:v1 "
     r"id=(?P<run_id>[0-9a-f]{64}) "
     r"outcome=(?P<outcome>converged|exhausted|aborted) "
-    r"head=(?P<head>[0-9a-f]{40}) -->$",
+    r"head=(?P<head>[0-9a-f]{40})(?: after=(?P<after>[1-9][0-9]*))? -->$",
     re.MULTILINE,
+)
+RUN_RESUME_V1_RE = re.compile(
+    r"^<!-- local-review-run-resume:v1 id=(?P<run_id>[0-9a-f]{64}) "
+    r"after=(?P<after>[1-9][0-9]*) head=(?P<head>[0-9a-f]{40}) -->$"
 )
 PASS_V3_RE = re.compile(
     r"^<!-- local-review-pass:v3 "
     r"engine=(?P<engine>codex|claude|gemini|antigravity) "
     r"round=(?P<round>[1-9][0-9]*) base=[0-9a-f]{40} "
-    r"head=[0-9a-f]{40} result-sha256=[0-9a-f]{64} -->$",
+    r"head=(?P<head>[0-9a-f]{40}) result-sha256=[0-9a-f]{64} -->$",
     re.MULTILINE,
 )
 COMPLETE_V3_RE = re.compile(
     r"^<!-- local-review-complete:v3 "
     r"engine=(?P<engine>codex|claude|gemini|antigravity) "
     r"round=(?P<round>[1-9][0-9]*) base=[0-9a-f]{40} "
-    r"before=[0-9a-f]{40} head=[0-9a-f]{40} "
+    r"before=[0-9a-f]{40} head=(?P<head>[0-9a-f]{40}) "
     r"classification=(?:minor|material) fingerprints=[A-Za-z0-9._:/,-]* "
     r"result-sha256=[0-9a-f]{64} -->$",
     re.MULTILINE,
@@ -311,24 +315,108 @@ def _run_records(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _run_end(rows: list[dict[str, Any]], run_id: str) -> dict[str, Any] | None:
-    matches: list[dict[str, Any]] = []
-    for row in rows:
+    terminal: dict[str, Any] | None = None
+    seen: set[str] = set()
+    latest_resume: int | None = None
+    for row in sorted(rows, key=lambda item: item["id"] if isinstance(item.get("id"), int) else 0):
         body = row.get("body")
         comment_id = row.get("id")
         if not isinstance(body, str) or not isinstance(comment_id, int):
             continue
         marker = RUN_END_V1_RE.fullmatch(body)
         if marker is not None and marker.group("run_id") == run_id:
-            matches.append(
-                {
-                    "comment_id": comment_id,
-                    "head": marker.group("head"),
-                    "outcome": marker.group("outcome"),
-                }
-            )
-    if len(matches) > 1:
-        _fail("local-review run has more than one terminal marker")
-    return matches[0] if matches else None
+            if body in seen:
+                continue
+            if terminal is not None:
+                _fail("local-review run has more than one terminal marker")
+            after = marker.group("after")
+            if (None if after is None else int(after)) != latest_resume:
+                _fail("review-run terminal marker does not follow its latest recovery")
+            terminal = {
+                "comment_id": comment_id,
+                "head": marker.group("head"),
+                "outcome": marker.group("outcome"),
+            }
+            seen.add(body)
+        resume = RUN_RESUME_V1_RE.fullmatch(body)
+        if resume is not None and resume.group("run_id") == run_id:
+            if body in seen:
+                continue
+            if terminal is None or terminal["outcome"] != "aborted" or terminal["comment_id"] != int(resume.group("after")):
+                _fail("review-run recovery must reference its most recent aborted terminal marker")
+            terminal = None
+            latest_resume = comment_id
+            seen.add(body)
+    return terminal
+
+
+def _resume_run(args: argparse.Namespace) -> None:
+    """Recover bookkeeping interruptions without spending or resetting rounds."""
+    rows = _issue_comments(args.repo, args.pr)
+    records = _run_records(rows)
+    if not records:
+        _fail("no authorized review run exists to resume")
+    run = records[-1]
+    if run["base"] != args.base:
+        _fail("resume must preserve the authorized pinned review base")
+    _verify_head(args.repo, args.pr, args.head)
+    terminal = _run_end(rows, cast(str, run["run_id"]))
+    if terminal is None:
+        print(json.dumps({"run_id": run["run_id"], "replayed": True, "verified": True}))
+        return
+    if terminal["outcome"] != "aborted":
+        _fail("a converged or exhausted review run cannot be resumed; recovery never resets the round budget")
+    marker = f"<!-- local-review-run-resume:v1 id={run['run_id']} after={terminal['comment_id']} head={args.head} -->"
+    comment_id, replayed = _post_issue_comment(args.repo, args.pr, marker, marker)
+    _verify_head(args.repo, args.pr, args.head)
+    if _run_end(_issue_comments(args.repo, args.pr), cast(str, run["run_id"])) is not None:
+        _fail("review run did not resume")
+    print(json.dumps({"comment_id": comment_id, "run_id": run["run_id"], "replayed": replayed, "verified": True}))
+
+
+def _status(args: argparse.Namespace) -> None:
+    """Give automated callers the next action without turning gaps into errors."""
+    rows = _issue_comments(args.repo, args.pr)
+    runs = _run_records(rows)
+    _verify_head(args.repo, args.pr, args.head)
+    if not runs:
+        print(json.dumps({"next_action": "start-run", "reason": "no_run"}))
+        return
+    run = runs[-1]
+    terminal = _run_end(rows, cast(str, run["run_id"]))
+    passes = []
+    for row in rows:
+        if not isinstance(row.get("id"), int) or row["id"] <= run["comment_id"]:
+            continue
+        body = row.get("body")
+        if not isinstance(body, str):
+            continue
+        marker = PASS_V3_RE.match(body) or COMPLETE_V3_RE.match(body)
+        if marker is not None:
+            passes.append({
+                "engine": "gemini" if marker.group("engine") == "antigravity" else marker.group("engine"),
+                "round": int(marker.group("round")),
+                "head": marker.group("head"),
+                "status": "clean" if PASS_V3_RE.match(body) else "changed",
+            })
+    highest = max((entry["round"] for entry in passes), default=1)
+    owned = [entry for entry in passes if entry["engine"] == args.engine]
+    reviewed = next((entry for entry in reversed(owned) if entry["head"] == args.head and entry["status"] == "clean"), None)
+    next_round = highest + int(any(entry["round"] == highest for entry in owned))
+    if terminal is not None:
+        action = "resume-run" if terminal["outcome"] == "aborted" else "finished"
+    elif reviewed:
+        action = "covered"
+    elif next_round > run["max_rounds"]:
+        action = "finish-exhausted"
+    else:
+        action = "review"
+    print(json.dumps({
+        "next_action": action, "run_id": run["run_id"], "base": run["base"],
+        "head": args.head, "engine": args.engine, "next_round": next_round,
+        "max_rounds": run["max_rounds"], "passes": passes,
+        "terminal": terminal,
+    }, sort_keys=True))
 
 
 def _start_run(args: argparse.Namespace) -> None:
@@ -466,9 +554,17 @@ def _finish_run(args: argparse.Namespace) -> None:
         _fail("no authenticated local-review run exists")
     run = records[-1]
     existing = _run_end(rows, cast(str, run["run_id"]))
+    recoveries: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row.get("id"), int) or not isinstance(row.get("body"), str):
+            continue
+        resume = RUN_RESUME_V1_RE.fullmatch(row["body"])
+        if resume is not None and resume.group("run_id") == run["run_id"]:
+            recoveries[row["body"]] = min(recoveries.get(row["body"], row["id"]), row["id"])
+    after = f" after={max(recoveries.values())}" if recoveries else ""
     marker = (
         f"<!-- local-review-run-end:v1 id={run['run_id']} "
-        f"outcome={args.outcome} head={args.head} -->"
+        f"outcome={args.outcome} head={args.head}{after} -->"
     )
     if existing is not None:
         if existing["head"] != args.head or existing["outcome"] != args.outcome:
@@ -712,6 +808,20 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--authorization-file", required=True)
     start.add_argument("--restart", action="store_true")
     start.set_defaults(handler=_start_run)
+
+    resume = commands.add_parser("resume-run")
+    resume.add_argument("--repo", required=True)
+    resume.add_argument("--pr", required=True, type=int)
+    resume.add_argument("--head", required=True, type=_sha)
+    resume.add_argument("--base", required=True, type=_sha)
+    resume.set_defaults(handler=_resume_run)
+
+    status = commands.add_parser("status")
+    status.add_argument("--repo", required=True)
+    status.add_argument("--pr", required=True, type=int)
+    status.add_argument("--head", required=True, type=_sha)
+    status.add_argument("--engine", required=True, choices=ENGINES)
+    status.set_defaults(handler=_status)
 
     authorize = commands.add_parser("authorize-pass")
     authorize.add_argument("--repo", required=True)

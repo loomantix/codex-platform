@@ -57,9 +57,12 @@ an independent Claude reviewer only through the synced, tested
 raw `claude` CLI directly or hand-compose an equivalent command. Never supply
 or override Claude's model, effort, permission, persistence, or output options;
 the launcher owns those settings and pins literal `--effort low`. Do not set
-`CLAUDE_REVIEW_CLI` outside launcher tests. A missing, incompatible, or failed
-launcher is a blocker, not permission to fall back to the raw CLI.
-The launcher also owns a 30-minute pass timeout. Operators may lower it with
+`CLAUDE_REVIEW_CLI` outside launcher tests. A launcher interruption enters the
+ledger's "Recover interrupted reviews" path: inspect saved evidence and repair
+routine state under the existing authorization before reporting a blocker.
+Never fall back to the raw CLI or claim completion without verified evidence.
+The launcher owns a 45-minute pass timeout and disables the shorter print-mode
+background wait ceiling, so validation can finish within that outer budget. Operators may lower it with
 `LOCAL_REVIEW_PASS_TIMEOUT_SECONDS`; values above the hard 3600-second ceiling
 are rejected.
 
