@@ -20,10 +20,13 @@ command, or through a replacement wrapper. Never supply or override Claude's
 model, effort, permission, persistence, or output options; the tested launcher
 owns those settings and pins literal `--effort low`. Do not set
 `CLAUDE_REVIEW_CLI` outside launcher tests. A missing or incompatible launcher,
-and a cap-exhausted `authorize-pass` refusal, remain blockers: report them. If
-a launched pass is interrupted or its exact-head preflight rejects routine
-metadata drift, follow "Recover interrupted reviews" in the ledger before
-yielding: inspect the saved result, reconcile live state, and resume — or
+and a cap-exhausted `authorize-pass` refusal, remain blockers: report them. The
+launcher preflight rejects only a repository or author mismatch, a local, PR, or
+remote head that differs from `--head`, a dirty worktree, or an `authorize-pass`
+refusal; none of those is recoverable drift. Re-pin a moved head through
+`status`, clean the worktree, or report the blocker. If a launched pass is
+interrupted after preflight, follow "Recover interrupted reviews" in the ledger
+before yielding: inspect the saved result, reconcile live state, and resume — or
 finalize, once the vendored helper supports it — within the existing
 authorization. Do not fall back to a direct Claude invocation.
 
@@ -97,8 +100,10 @@ round is a scheduling choice, not a protocol rule.
 Resolve this engine's round number per the ledger: `$AGENT_LOOP_REVIEW_ROUND`
 when the runner set it; otherwise use the controller's `status` command and its
 `next_round` for the current run. Follow `covered` or `resume-run` before starting
-another model pass. Only a legacy PR with no run boundary uses one past the count
-of this engine's pass/completion markers across the PR. Rounds
+another model pass. On a PR with no run and no v3 attestation, `no_run` means
+`start-run`, not a legacy round. Only a legacy PR that already carries
+pass/completion markers but no run boundary uses one past the count of this
+engine's pass/completion markers across the PR. Rounds
 1–2 are adversarial; round 3 and later are convergence rounds. State which
 applies before invoking a lane.
 

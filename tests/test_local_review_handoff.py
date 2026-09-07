@@ -473,6 +473,66 @@ def test_resume_rejects_a_fabricated_recovery_parent(handoff: ModuleType) -> Non
         handoff._run_end(rows, run_id)
 
 
+@pytest.mark.parametrize("outcome", ["converged", "exhausted"])
+def test_run_state_rejects_recovery_after_a_sealed_terminal(handoff: ModuleType, outcome: str) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    rows = [
+        _row(20, body),
+        _row(21, f"<!-- local-review-run-end:v1 id={run_id} outcome={outcome} head={HEAD} -->"),
+        _row(22, f"<!-- local-review-run-resume:v1 id={run_id} after=21 head={HEAD} -->"),
+    ]
+    # A recovery whose parent is a converged or exhausted terminal must not
+    # reopen the run, even though the parent id is the latest terminal.
+    with pytest.raises(handoff.HandoffError, match="most recent aborted"):
+        handoff._run_state(rows, run_id)
+
+
+@pytest.mark.parametrize("listing", ["visible", "lost", "re-aborted"])
+def test_resume_verifies_the_posted_recovery_by_reading_back(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], listing: str,
+) -> None:
+    run_body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(run_body).group("run_id")
+    rows = [_row(20, run_body), _row(21, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->")]
+    posted: list[dict[str, Any]] = []
+
+    def fake_gh(args: list[str], payload: dict[str, Any] | None = None) -> str:
+        if args[:2] == ["pr", "view"]:
+            return HEAD + "\n"
+        if args[-1] == f"repos/{REPO}/issues/7/comments?per_page=100":
+            # A listing that never shows the recovery models a lost write; one
+            # that shows a newer aborted terminal models a concurrent finish.
+            visible = list(rows) if listing == "lost" else rows + posted
+            if posted and listing == "re-aborted":
+                visible = visible + [_row(31, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} after=30 -->")]
+            return json.dumps([visible])
+        if args[-1] == f"repos/{REPO}/issues/7/comments":
+            assert payload is not None
+            posted.append(_row(30, cast(str, payload["body"])))
+            return json.dumps({"id": 30})
+        if args[-1] == f"repos/{REPO}/issues/comments/30":
+            return json.dumps(posted[0])
+        raise AssertionError(args)
+
+    monkeypatch.setattr(handoff, "_run_gh", fake_gh)
+    command = ["resume-run", "--repo", REPO, "--pr", "7", "--base", BASE, "--head", HEAD]
+    if listing == "lost":
+        with pytest.raises(handoff.HandoffError, match="idempotency key did not resolve"):
+            handoff.main(command)
+        return
+    if listing == "re-aborted":
+        with pytest.raises(handoff.HandoffError, match="did not resume"):
+            handoff.main(command)
+        return
+    assert handoff.main(command) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["comment_id"] == 30
+    assert result["replayed"] is False
+    assert posted[0]["body"] == f"<!-- local-review-run-resume:v1 id={run_id} after=21 head={HEAD} -->"
+
+
 def test_matching_body_recovers_identical_deliveries_and_ignores_quotes(handoff: ModuleType) -> None:
     marker = "<!-- local-review-example:v1 -->"
     body = marker + "\nVerified context."
@@ -523,7 +583,7 @@ def _status(handoff: ModuleType, capsys: pytest.CaptureFixture[str], engine: str
     return cast(dict[str, Any], json.loads(capsys.readouterr().out))
 
 
-@pytest.mark.parametrize("engine,next_round", [("codex", 2), ("claude", 3)])
+@pytest.mark.parametrize("engine,next_round", [("codex", 2), ("claude", 3), ("gemini", 2)])
 def test_status_next_round_follows_the_run_not_this_engine_alone(
     handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str], engine: str, next_round: int,
@@ -535,6 +595,23 @@ def test_status_next_round_follows_the_run_not_this_engine_alone(
     assert result["next_action"] == "review"
     assert result["next_round"] == next_round
     assert handoff.main(["authorize-pass", "--repo", REPO, "--pr", "7", "--head", HEAD, "--base", BASE, "--engine", engine, "--round", str(next_round)]) == 0
+
+
+def test_status_next_round_is_the_run_highest_when_another_engine_leads(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows = [
+        _row(20, _run_body(handoff)),
+        _pass_row(21, "codex", 1, head=OTHER_HEAD),
+        _pass_row(22, "claude", 2, head=OTHER_HEAD),
+        _pass_row(23, "claude", 3, head=OTHER_HEAD),
+    ]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    # Codex owes the run's current round 3, not its own next round 2.
+    assert _status(handoff, capsys, "codex")["next_round"] == 3
+    with pytest.raises(handoff.HandoffError, match="already completed"):
+        handoff.main(["authorize-pass", "--repo", REPO, "--pr", "7", "--head", HEAD, "--base", BASE, "--engine", "claude", "--round", "3"])
 
 
 def test_pass_records_are_scoped_to_the_current_run(

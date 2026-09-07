@@ -35,8 +35,10 @@ Resolve this engine's round number per `.codex/references/local-review-ledger.md
 before selecting lanes: use `$AGENT_LOOP_REVIEW_ROUND` when the runner set it,
 take it from an invoking `deepcritique`, or use the controller's `status` and
 `next_round` for the current run. Do not count historical runs as current rounds.
-Follow its recovery/coverage action before invoking another reviewer. Only legacy
-PRs without a run boundary use one past this engine's total pass-marker count.
+Follow its recovery/coverage action before invoking another reviewer. On a PR
+with no run and no v3 attestation, `no_run` means `start-run`, not a legacy
+round. Only a legacy PR that already carries pass/completion markers but no run
+boundary uses one past this engine's total pass-marker count.
 
 - **Rounds 1–2 run adversarially.** The stance, matrices, and fix bias below
   apply as written.
