@@ -377,19 +377,11 @@ def _resume_run(args: argparse.Namespace) -> None:
     print(json.dumps({"comment_id": comment_id, "run_id": run["run_id"], "replayed": replayed, "verified": True}))
 
 
-def _status(args: argparse.Namespace) -> None:
-    """Give automated callers the next action without turning gaps into errors."""
-    rows = _issue_comments(args.repo, args.pr)
-    runs = _run_records(rows)
-    _verify_head(args.repo, args.pr, args.head)
-    if not runs:
-        print(json.dumps({"next_action": "start-run", "reason": "no_run"}))
-        return
-    run = runs[-1]
-    terminal = _run_end(rows, cast(str, run["run_id"]))
-    passes = []
+def _pass_records(rows: list[dict[str, Any]], start_comment_id: int) -> list[dict[str, Any]]:
+    """Use the same unquoted, run-scoped evidence for planning and admission."""
+    passes: list[dict[str, Any]] = []
     for row in rows:
-        if not isinstance(row.get("id"), int) or row["id"] <= run["comment_id"]:
+        if not isinstance(row.get("id"), int) or row["id"] <= start_comment_id:
             continue
         body = row.get("body")
         if not isinstance(body, str):
@@ -402,6 +394,20 @@ def _status(args: argparse.Namespace) -> None:
                 "head": marker.group("head"),
                 "status": "clean" if PASS_V3_RE.match(body) else "changed",
             })
+    return passes
+
+
+def _status(args: argparse.Namespace) -> None:
+    """Give automated callers the next action without turning gaps into errors."""
+    rows = _issue_comments(args.repo, args.pr)
+    runs = _run_records(rows)
+    _verify_head(args.repo, args.pr, args.head)
+    if not runs:
+        print(json.dumps({"next_action": "start-run", "reason": "no_run"}))
+        return
+    run = runs[-1]
+    terminal = _run_end(rows, cast(str, run["run_id"]))
+    passes = _pass_records(rows, cast(int, run["comment_id"]))
     highest = max((entry["round"] for entry in passes), default=1)
     owned = [entry for entry in passes if entry["engine"] == args.engine]
     reviewed = next((entry for entry in reversed(owned) if entry["head"] == args.head and entry["status"] == "clean"), None)
@@ -510,25 +516,9 @@ def _authorize_pass(args: argparse.Namespace) -> None:
             f"review round {args.round} exceeds the {run['tier']} cap "
             f"of {run['max_rounds']}"
         )
-    existing: set[tuple[str, int]] = set()
-    highest_round = 0
-    start_comment_id = cast(int, run["comment_id"])
-    for row in rows:
-        if (
-            not isinstance(row.get("id"), int)
-            or cast(int, row["id"]) <= start_comment_id
-        ):
-            continue
-        body = row.get("body")
-        if not isinstance(body, str):
-            continue
-        for marker in (*PASS_V3_RE.finditer(body), *COMPLETE_V3_RE.finditer(body)):
-            engine = marker.group("engine")
-            if engine == "antigravity":
-                engine = "gemini"
-            round_number = int(marker.group("round"))
-            existing.add((engine, round_number))
-            highest_round = max(highest_round, round_number)
+    passes = _pass_records(rows, cast(int, run["comment_id"]))
+    existing = {(entry["engine"], entry["round"]) for entry in passes}
+    highest_round = max((entry["round"] for entry in passes), default=0)
     if (args.engine, args.round) in existing:
         _fail("this engine already completed the requested run round")
     if args.round > highest_round + 1:

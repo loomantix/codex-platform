@@ -483,7 +483,7 @@ def test_matching_body_recovers_identical_deliveries_and_ignores_quotes(handoff:
 
 
 @pytest.mark.parametrize("state,action,next_round", [
-    ("empty", "start-run", None), ("active", "review", 1),
+    ("empty", "start-run", None), ("active", "review", 1), ("quoted", "review", 1),
     ("covered", "covered", 2), ("aborted", "resume-run", 1),
     ("cap", "finish-exhausted", 5),
 ])
@@ -500,12 +500,16 @@ def test_status_reports_recovery_without_manual_round_arithmetic(
         rows.append(_row(21, f"<!-- local-review-pass:v3 engine=codex round={round_number} base={BASE} head={reviewed_head} result-sha256={'c' * 64} -->"))
     if state == "aborted":
         rows.append(_row(22, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"))
+    if state == "quoted":
+        rows.append(_row(22, f"Example only:\n<!-- local-review-pass:v3 engine=codex round=4 base={BASE} head={HEAD} result-sha256={'c' * 64} -->"))
     monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
     monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
     assert handoff.main(["status", "--repo", REPO, "--pr", "7", "--head", HEAD, "--engine", "codex"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["next_action"] == action
     assert result.get("next_round") == next_round
+    if state == "quoted":
+        assert handoff.main(["authorize-pass", "--repo", REPO, "--pr", "7", "--head", HEAD, "--base", BASE, "--engine", "codex", "--round", "1"]) == 0
 
 
 def test_show_handoff_uses_latest_authenticated_comment(
