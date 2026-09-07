@@ -55,14 +55,14 @@ RUN_RESUME_V1_RE = re.compile(
 PASS_V3_RE = re.compile(
     r"^<!-- local-review-pass:v3 "
     r"engine=(?P<engine>codex|claude|gemini|antigravity) "
-    r"round=(?P<round>[1-9][0-9]*) base=[0-9a-f]{40} "
+    r"round=(?P<round>[1-9][0-9]*) base=(?P<base>[0-9a-f]{40}) "
     r"head=(?P<head>[0-9a-f]{40}) result-sha256=[0-9a-f]{64} -->$",
     re.MULTILINE,
 )
 COMPLETE_V3_RE = re.compile(
     r"^<!-- local-review-complete:v3 "
     r"engine=(?P<engine>codex|claude|gemini|antigravity) "
-    r"round=(?P<round>[1-9][0-9]*) base=[0-9a-f]{40} "
+    r"round=(?P<round>[1-9][0-9]*) base=(?P<base>[0-9a-f]{40}) "
     r"before=[0-9a-f]{40} head=(?P<head>[0-9a-f]{40}) "
     r"classification=(?P<classification>minor|material) fingerprints=[A-Za-z0-9._:/,-]* "
     r"result-sha256=[0-9a-f]{64} -->$",
@@ -331,6 +331,11 @@ def _run_state(
         if not isinstance(body, str) or body in seen:
             continue
         marker = RUN_END_V1_RE.fullmatch(body)
+        resume = RUN_RESUME_V1_RE.fullmatch(body)
+        if marker is None and body.startswith("<!-- local-review-run-end:v1"):
+            _fail("local-review run terminal marker is malformed")
+        if resume is None and body.startswith("<!-- local-review-run-resume:v1"):
+            _fail("local-review run recovery marker is malformed")
         if marker is not None and marker.group("run_id") == run_id:
             if terminal is not None:
                 _fail("local-review run has more than one terminal marker")
@@ -343,7 +348,6 @@ def _run_state(
                 "outcome": marker.group("outcome"),
             }
             seen.add(body)
-        resume = RUN_RESUME_V1_RE.fullmatch(body)
         if resume is not None and resume.group("run_id") == run_id:
             if terminal is None or terminal["outcome"] != "aborted" or terminal["comment_id"] != int(resume.group("after")):
                 _fail("review-run recovery must reference its most recent aborted terminal marker")
@@ -367,9 +371,11 @@ def _resume_run(args: argparse.Namespace) -> None:
     if run["base"] != args.base:
         _fail("resume must preserve the authorized pinned review base")
     _verify_head(args.repo, args.pr, args.head)
-    terminal = _run_end(rows, cast(str, run["run_id"]))
+    terminal, latest_resume = _run_state(rows, cast(str, run["run_id"]))
     if terminal is None:
-        print(json.dumps({"run_id": run["run_id"], "replayed": True, "verified": True}))
+        if latest_resume is None:
+            _fail("the local-review run is open; there is nothing to resume")
+        print(json.dumps({"comment_id": latest_resume, "run_id": run["run_id"], "replayed": True, "verified": True}))
         return
     if terminal["outcome"] != "aborted":
         _fail("a converged or exhausted review run cannot be resumed; recovery never resets the round budget")
@@ -381,9 +387,10 @@ def _resume_run(args: argparse.Namespace) -> None:
     print(json.dumps({"comment_id": comment_id, "run_id": run["run_id"], "replayed": replayed, "verified": True}))
 
 
-def _pass_records(rows: list[dict[str, Any]], start_comment_id: int) -> list[dict[str, Any]]:
+def _pass_records(rows: list[dict[str, Any]], run: dict[str, Any]) -> list[dict[str, Any]]:
     """Use the same unquoted, run-scoped evidence for planning and admission."""
     passes: list[dict[str, Any]] = []
+    start_comment_id = cast(int, run["comment_id"])
     for row in rows:
         if not isinstance(row.get("id"), int) or row["id"] <= start_comment_id:
             continue
@@ -393,6 +400,8 @@ def _pass_records(rows: list[dict[str, Any]], start_comment_id: int) -> list[dic
         clean = PASS_V3_RE.match(body)
         marker = clean or COMPLETE_V3_RE.match(body)
         if marker is not None and body[marker.end():].startswith("\n") and body[marker.end() + 1:].strip():
+            if marker.group("base") != run["base"]:
+                _fail("local-review attestation base does not match the run's pinned base")
             passes.append({
                 "engine": "gemini" if marker.group("engine") == "antigravity" else marker.group("engine"),
                 "round": int(marker.group("round")),
@@ -413,15 +422,21 @@ def _status(args: argparse.Namespace) -> None:
         return
     run = runs[-1]
     terminal = _run_end(rows, cast(str, run["run_id"]))
-    passes = _pass_records(rows, cast(int, run["comment_id"]))
+    passes = _pass_records(rows, run)
     highest = max((entry["round"] for entry in passes), default=1)
     owned = [entry for entry in passes if entry["engine"] == args.engine]
     # Coverage records this engine's evidence; convergence additionally checks
     # the relay's material transitions and the other declared reviewers.
     reviewed = next((entry for entry in reversed(owned) if entry["head"] == args.head), None)
     next_round = highest + int(any(entry["round"] == highest for entry in owned))
-    if terminal is not None:
-        action = "resume-run" if terminal["outcome"] == "aborted" else "finished"
+    reason = None
+    if terminal is not None and terminal["outcome"] == "aborted":
+        action = "resume-run"
+    elif terminal is not None and terminal["head"] != args.head:
+        # The run closed at another head; this head needs its own run.
+        action, reason = "start-run", "terminal_head_stale"
+    elif terminal is not None:
+        action = "finished"
     elif reviewed:
         action = "covered"
     elif next_round > run["max_rounds"]:
@@ -432,7 +447,7 @@ def _status(args: argparse.Namespace) -> None:
         "next_action": action, "run_id": run["run_id"], "base": run["base"],
         "head": args.head, "engine": args.engine, "next_round": next_round,
         "max_rounds": run["max_rounds"], "passes": passes,
-        "terminal": terminal,
+        "reason": reason, "terminal": terminal,
     }, sort_keys=True))
 
 
@@ -524,7 +539,7 @@ def _authorize_pass(args: argparse.Namespace) -> None:
             f"review round {args.round} exceeds the {run['tier']} cap "
             f"of {run['max_rounds']}"
         )
-    passes = _pass_records(rows, cast(int, run["comment_id"]))
+    passes = _pass_records(rows, run)
     existing = {(entry["engine"], entry["round"]) for entry in passes}
     highest_round = max((entry["round"] for entry in passes), default=0)
     if (args.engine, args.round) in existing:

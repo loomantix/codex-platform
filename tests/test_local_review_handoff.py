@@ -514,6 +514,141 @@ def test_status_reports_recovery_without_manual_round_arithmetic(
         assert handoff.main(["authorize-pass", "--repo", REPO, "--pr", "7", "--head", HEAD, "--base", BASE, "--engine", "codex", "--round", "1"]) == 0
 
 
+def _pass_row(comment_id: int, engine: str, round_number: int, *, head: str = HEAD, base: str = BASE) -> dict[str, Any]:
+    return _row(comment_id, f"<!-- local-review-pass:v3 engine={engine} round={round_number} base={base} head={head} result-sha256={'c' * 64} -->\nVerified pass.")
+
+
+def _status(handoff: ModuleType, capsys: pytest.CaptureFixture[str], engine: str = "codex") -> dict[str, Any]:
+    assert handoff.main(["status", "--repo", REPO, "--pr", "7", "--head", HEAD, "--engine", engine]) == 0
+    return cast(dict[str, Any], json.loads(capsys.readouterr().out))
+
+
+@pytest.mark.parametrize("engine,next_round", [("codex", 2), ("claude", 3)])
+def test_status_next_round_follows_the_run_not_this_engine_alone(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], engine: str, next_round: int,
+) -> None:
+    rows = [_row(20, _run_body(handoff)), _pass_row(21, "codex", 1, head=OTHER_HEAD), _pass_row(22, "claude", 2, head=OTHER_HEAD)]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    result = _status(handoff, capsys, engine)
+    assert result["next_action"] == "review"
+    assert result["next_round"] == next_round
+    assert handoff.main(["authorize-pass", "--repo", REPO, "--pr", "7", "--head", HEAD, "--base", BASE, "--engine", engine, "--round", str(next_round)]) == 0
+
+
+def test_pass_records_are_scoped_to_the_current_run(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    prior_body = _run_body(handoff)
+    prior_id = handoff.RUN_V1_RE.search(prior_body).group("run_id")
+    rows = [
+        _row(20, prior_body),
+        _pass_row(21, "codex", 1),
+        _row(22, f"<!-- local-review-run-end:v1 id={prior_id} outcome=aborted head={HEAD} -->"),
+        _row(23, _run_body(handoff, supersedes=20, content="Explicit restart authorization.")),
+    ]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    result = _status(handoff, capsys)
+    assert result["next_action"] == "review"
+    assert result["next_round"] == 1
+    assert result["passes"] == []
+    assert handoff.main(["authorize-pass", "--repo", REPO, "--pr", "7", "--head", HEAD, "--base", BASE, "--engine", "codex", "--round", "1"]) == 0
+
+
+def test_pass_records_reject_an_attestation_against_another_base(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    rows = [_row(20, _run_body(handoff)), _pass_row(21, "codex", 1, base="e" * 40)]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    with pytest.raises(handoff.HandoffError, match="pinned base"):
+        _status(handoff, capsys)
+
+
+@pytest.mark.parametrize("outcome", ["converged", "exhausted"])
+def test_status_does_not_report_a_stale_terminal_as_finished(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], outcome: str,
+) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    end = f"<!-- local-review-run-end:v1 id={run_id} outcome={outcome} head={OTHER_HEAD} -->"
+    rows = [_row(20, body), _row(21, end)]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    result = _status(handoff, capsys)
+    assert result["next_action"] == "start-run"
+    assert result["reason"] == "terminal_head_stale"
+    rows[1] = _row(21, end.replace(OTHER_HEAD, HEAD))
+    result = _status(handoff, capsys)
+    assert result["next_action"] == "finished"
+    assert result["reason"] is None
+
+
+@pytest.mark.parametrize("body_suffix,match", [
+    (" ", "terminal marker is malformed"),
+    ("\n", "terminal marker is malformed"),
+])
+def test_run_state_fails_closed_on_a_malformed_terminal_marker(handoff: ModuleType, body_suffix: str, match: str) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    rows = [_row(20, body), _row(21, f"<!-- local-review-run-end:v1 id={run_id} outcome=converged head={HEAD} -->" + body_suffix)]
+    with pytest.raises(handoff.HandoffError, match=match):
+        handoff._run_state(rows, run_id)
+
+
+def test_run_state_fails_closed_on_a_malformed_recovery_marker(handoff: ModuleType) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    rows = [
+        _row(20, body),
+        _row(21, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"),
+        _row(22, f"<!-- local-review-run-resume:v1 id={run_id} after=0 head={HEAD} -->"),
+    ]
+    with pytest.raises(handoff.HandoffError, match="recovery marker is malformed"):
+        handoff._run_state(rows, run_id)
+
+
+@pytest.mark.parametrize("after", ["", " after=99"])
+def test_run_state_requires_the_terminal_to_follow_the_latest_recovery(handoff: ModuleType, after: str) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    rows = [
+        _row(20, body),
+        _row(21, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"),
+        _row(22, f"<!-- local-review-run-resume:v1 id={run_id} after=21 head={HEAD} -->"),
+        _row(23, f"<!-- local-review-run-end:v1 id={run_id} outcome=converged head={HEAD}{after} -->"),
+    ]
+    with pytest.raises(handoff.HandoffError, match="does not follow its latest recovery"):
+        handoff._run_state(rows, run_id)
+    rows[3] = _row(23, f"<!-- local-review-run-end:v1 id={run_id} outcome=converged head={HEAD} after=22 -->")
+    assert handoff._run_state(rows, run_id) == ({"comment_id": 23, "head": HEAD, "outcome": "converged"}, 22)
+    # A byte-identical redelivery of the pre-recovery terminal collapses as a
+    # duplicate and does not close the resumed run.
+    rows[3] = _row(23, rows[1]["body"])
+    assert handoff._run_state(rows, run_id) == (None, 22)
+
+
+def test_resume_on_an_open_run_reports_only_a_real_recovery(
+    handoff: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    body = _run_body(handoff)
+    run_id = handoff.RUN_V1_RE.search(body).group("run_id")
+    rows = [_row(20, body)]
+    monkeypatch.setattr(handoff, "_issue_comments", lambda repo, pr: rows)
+    monkeypatch.setattr(handoff, "_verify_head", lambda repo, pr, head: None)
+    resume = ["resume-run", "--repo", REPO, "--pr", "7", "--base", BASE, "--head", HEAD]
+    with pytest.raises(handoff.HandoffError, match="nothing to resume"):
+        handoff.main(resume)
+    rows.append(_row(21, f"<!-- local-review-run-end:v1 id={run_id} outcome=aborted head={HEAD} -->"))
+    rows.append(_row(22, f"<!-- local-review-run-resume:v1 id={run_id} after=21 head={HEAD} -->"))
+    assert handoff.main(resume) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["replayed"] is True
+    assert result["comment_id"] == 22
+
+
 @pytest.mark.parametrize("classification", ["minor", "material"])
 @pytest.mark.parametrize("round_number", [1, 4])
 def test_status_covers_current_head_completions(

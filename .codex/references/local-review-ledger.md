@@ -700,10 +700,14 @@ result. Reuse verified CI at the exact head when it ran the required full suite;
 state any incomplete or failed local run separately.
 
 The controller's `status --repo ... --pr ... --head ... --engine ...` reports
-the next action. Its `covered` action means this engine has exact-head evidence,
-including a completion after minor or material fixes; it does not assert overall
-relay convergence. Check the declared reviewers, material transitions, and thread
-dispositions separately. For an aborted run use `resume-run --repo ... --pr ... --base
+the next action: `start-run`, `review`, `covered`, `resume-run`,
+`finish-exhausted`, or `finished`, with `next_round` present once a run exists.
+Its `covered` action means this engine has exact-head evidence, including a
+completion after minor or material fixes; it does not assert overall relay
+convergence, which `verify-coverage` and `verify-ledger` decide. A converged or
+exhausted run whose terminal names another head yields `start-run` with
+`reason=terminal_head_stale`: the run is closed, and the new head needs its own
+authorized run. For an aborted run use `resume-run --repo ... --pr ... --base
 <original-base> --head <current-head>`; this appends a recovery record referencing
 the aborted terminal marker and preserves the run identity, completed passes,
 cleanup latches, and cap. A subsequent terminal marker includes `after=<resume

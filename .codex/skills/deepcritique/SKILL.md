@@ -21,8 +21,9 @@ model, effort, permission, persistence, or output options; the tested launcher
 owns those settings and pins literal `--effort low`. Do not set
 `CLAUDE_REVIEW_CLI` outside launcher tests. If the launcher is interrupted or
 rejects preflight, follow "Recover interrupted reviews" in the ledger before
-yielding: inspect the saved result, reconcile live state, and finalize or resume
-within the existing authorization. Do not fall back to a direct Claude invocation.
+yielding: inspect the saved result, reconcile live state, and resume — or
+finalize, once the vendored helper supports it — within the existing
+authorization. Do not fall back to a direct Claude invocation.
 
 ## Context Window Check
 
